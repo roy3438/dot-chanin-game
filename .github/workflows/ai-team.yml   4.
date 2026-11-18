@@ -1,0 +1,41 @@
+name: AI Team Pilot (Gemini)
+on:
+  workflow_dispatch:
+    inputs:
+      task:
+        description: 'Owner task for five AI teams'
+        required: true
+        default: 'Review DOT CHAIN mobile usability and metrics. Do not change code.'
+permissions:
+  contents: read
+  issues: write
+concurrency:
+  group: ai-team-pilot
+  cancel-in-progress: false
+jobs:
+  collaborate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    env:
+      GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+      GEMINI_MODEL: ${{ vars.GEMINI_MODEL || 'gemini-2.5-flash-lite' }}
+      TASK: ${{ inputs.task }}
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Run five AI roles
+        run: python scripts/team.py
+      - name: Save report even on failure
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ai-team-report
+          path: ai-team-report.md
+          if-no-files-found: warn
+      - name: Publish completed report to Issues
+        if: success()
+        run: gh issue create --title "AI team report - run ${{ github.run_number }}" --body-file ai-team-report.md
