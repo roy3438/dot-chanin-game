@@ -1,0 +1,83 @@
+name: AI Studio Mobile Touch Pilot
+
+on:
+  workflow_dispatch:
+    inputs:
+      task:
+        description: 'Owner-approved pilot task'
+        required: true
+        default: 'Review and prepare a safe fix for releasing a valid chain just outside the game board. Keep scoring and game rules unchanged.'
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: ai-studio-mobile-touch
+  cancel-in-progress: false
+
+jobs:
+  prepare-review:
+    runs-on: ubuntu-latest
+    timeout-minutes: 18
+    env:
+      GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+      GEMINI_MODEL: ${{ vars.GEMINI_MODEL }}
+      TASK: ${{ inputs.task }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Five AI roles review actual source
+        run: python scripts/source_review.py
+      - name: Apply narrowly scoped mobile touch fix
+        run: python scripts/mobile_touch_patch.py
+      - name: QA static and syntax checks
+        run: python scripts/mobile_touch_test.py
+      - name: Save team review
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ai-mobile-review
+          path: ai-source-review.md
+          if-no-files-found: warn
+      - name: Create approval-only pull request
+        env:
+          RUN_ID: ${{ github.run_id }}
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          branch="ai/mobile-touch-${RUN_ID}"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git switch -c "$branch"
+          git add index.html
+          git diff --cached --quiet && { echo "No code changes to propose"; exit 1; }
+          git commit -m "Propose mobile pointer release improvement"
+          git push origin "$branch"
+          cat > pr-body.md <<'EOF'
+          ## Owner approval required
+          This pull request is a **proposal only**. It must not be merged without owner approval.
+
+          ### Planning / Design / Development / QA / Operations
+          Five AI roles reviewed the current game source. Download the `ai-mobile-review` artifact from this workflow run for the complete handoffs.
+
+          ### Proposed change
+          When a chain is released just outside the board, complete the existing valid chain instead of always discarding it. Existing game rules, scoring, and mission logic are unchanged.
+
+          ### Automated QA
+          Source invariants and JavaScript syntax were checked. **No real browser or mobile device testing was performed.**
+
+          ### Manual approval checklist
+          - [ ] Touch release inside board still works
+          - [ ] Touch release just outside board works as intended
+          - [ ] Pointer cancellation still clears the chain
+          - [ ] Score, moves, missions, win/loss and save/restore still work
+          - [ ] Owner approves merge into main
+          EOF
+          gh pr create --repo "$REPOSITORY" --base main --head "$branch" --title "AI pilot: mobile touch release improvement" --body-file pr-body.md
