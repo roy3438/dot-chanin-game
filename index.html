@@ -350,7 +350,7 @@ h1 { font-size: clamp(25px, 7vw, 34px); letter-spacing: 0.09em; margin: 0; }
     const pos = locate(event.clientX, event.clientY);
     activePointer = null;
     if (boardNode.hasPointerCapture(event.pointerId)) boardNode.releasePointerCapture(event.pointerId);
-    if (pos === null) { cancelPath(); return; }
+    if (pos === null) { void finishPath(); return; }
     extend(pos);
     void finishPath();
   });
