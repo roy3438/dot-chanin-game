@@ -1,0 +1,56 @@
+              choices = [m for m in allowed if 'flash' in m and 'preview' not in m]
+              if not choices: raise RuntimeError('No compatible Gemini Flash model listed.')
+              chosen = sorted(choices, reverse=True)[0]
+          print('Review model:',chosen,flush=True)
+          
+          roles = [
+           ('Planning','Define requirements, scope, acceptance criteria.'),
+           ('Design','Evaluate mobile usability, contrast, touch targets, accessibility.'),
+           ('Development','Review actual HTML/CSS/JS source and propose specific safe changes. Do not pretend to run code.'),
+           ('QA','Provide test cases, regressions and unverified risks. Do not claim to have tested a browser.'),
+           ('Operations','Suggest measurable engagement metrics and a collection plan; no fabricated data.')]
+          
+          report = ['# DOT CHAIN: AI source review', '', '**Owner task:** '+task,
+                    '**Mode:** Read actual index.html; produce review document only. No game code or deployment changes.',
+                    '**Model:** '+chosen, '']
+          handoffs = ''
+          for role, instructions in roles:
+              print('Running role:',role,flush=True)
+              prompt = ('You are the '+role+' team. '+instructions+
+                ' Answer in Korean, concise and actionable. Separate confirmed source observations from suggestions. '
+                'Never claim browser testing, user analytics, or changes to game code. '
+                'Preserve all existing gameplay rules.\n\nOwner task:\n'+task+
+                '\n\nActual game source (index.html):\n'+source+
+                '\n\nPrior team handoffs:\n'+handoffs[-7000:])
+              result = request('POST','/models/'+chosen+':generateContent',
+                {'contents':[{'parts':[{'text':prompt}]}],
+                 'generationConfig':{'temperature':0.2,'maxOutputTokens':1600}})
+              answer = '\n'.join(part.get('text','') for candidate in result.get('candidates',[])
+                  for part in candidate.get('content',{}).get('parts',[]) if part.get('text')).strip()
+              if not answer: raise RuntimeError('Empty answer for '+role)
+              report += ['## '+role, '',answer,'']
+              handoffs += '\n'+role+': '+answer
+          
+          report += ['## Human approval gate','',
+           'No game code was changed. The owner must review the recommendations and authorize a separate implementation task.','']
+          Path('docs').mkdir(exist_ok=True)
+          Path('docs/ai-source-review.md').write_text('\n'.join(report),encoding='utf-8')
+          
+          PYCODE
+      - name: Create review pull request (no deployment)
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git checkout -b "ai-review-${{ github.run_id }}"
+          git add docs/ai-source-review.md
+          git commit -m "AI five-team source review"
+          git push origin HEAD
+          gh pr create --base main --head "ai-review-${{ github.run_id }}" --title "AI review: DOT CHAIN run ${{ github.run_number }}" --body "Five AI roles reviewed the actual game source. Only docs/ai-source-review.md was added. No game changes or deployment. Owner approval required."
+      - name: Save report if PR creation fails
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ai-source-review
+          path: docs/ai-source-review.md
+          if-no-files-found: ignore
