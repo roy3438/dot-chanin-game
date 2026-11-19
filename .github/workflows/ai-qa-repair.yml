@@ -50,4 +50,4 @@ jobs:
           PR_NUMBER: ${{ github.event.issue.number }}
           COMMENT_BODY: ${{ github.event.comment.body }}
           COMMENT_ID: ${{ github.event.comment.id }}
-        run: python scripts/qa_repair.py
+        run: python qa-tools/scripts/qa_repair.py
