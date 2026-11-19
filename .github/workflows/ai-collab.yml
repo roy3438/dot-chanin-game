@@ -1,0 +1,32 @@
+name: AI Studio Five Team Collaboration
+on:
+  issues:
+    types: [labeled]
+permissions:
+  contents: read
+  issues: write
+jobs:
+  collaborate:
+    if: github.event.label.name == 'ai-team' && github.event.issue.user.login == github.repository_owner
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Run five teams
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          GEMINI_MODEL: ${{ vars.GEMINI_MODEL }}
+          GH_TOKEN: ${{ github.token }}
+          ISSUE_NUMBER: ${{ github.event.issue.number }}
+          REPOSITORY: ${{ github.repository }}
+        run: python scripts/collab.py
+      - name: Upload team report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: five-team-report
+          path: team-report.md
+          if-no-files-found: ignore
