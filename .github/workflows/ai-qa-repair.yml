@@ -1,0 +1,53 @@
+name: AI Studio QA Repair Pilot
+on:
+  issue_comment:
+    types: [created]
+permissions:
+  contents: write
+  pull-requests: write
+  issues: read
+jobs:
+  repair:
+    if: >-
+      github.event.issue.pull_request != null &&
+      github.event.issue.number == 6 &&
+      github.event.comment.user.login == github.repository_owner &&
+      startsWith(github.event.comment.body, '[QA 수정 요청')
+    runs-on: ubuntu-latest
+    concurrency:
+      group: qa-repair-${{ github.event.issue.number }}
+      cancel-in-progress: false
+    steps:
+      - name: Read PR branch
+        id: pr
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.issue.number }}
+        run: |
+          gh api "repos/$GH_REPO/pulls/$PR_NUMBER" --jq '.head.ref' > branch.txt
+          BRANCH="$(cat branch.txt)"
+          case "$BRANCH" in
+            ai/approved-*) ;;
+            *) echo 'Not an approved development branch'; exit 1 ;;
+          esac
+          echo "branch=$BRANCH" >> "$GITHUB_OUTPUT"
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          path: qa-tools
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.pr.outputs.branch }}
+          persist-credentials: true
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: QA repair and verify
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.issue.number }}
+          COMMENT_BODY: ${{ github.event.comment.body }}
+          COMMENT_ID: ${{ github.event.comment.id }}
+        run: python qa-tools/scripts/qa_repair.py
