@@ -1,11 +1,15 @@
+
 name: AI Studio QA Repair Pilot
+
 on:
   issue_comment:
     types: [created]
+
 permissions:
   contents: write
   pull-requests: write
   issues: read
+
 jobs:
   repair:
     if: >-
@@ -14,9 +18,11 @@ jobs:
       github.event.comment.user.login == github.repository_owner &&
       startsWith(github.event.comment.body, '[QA 수정 요청')
     runs-on: ubuntu-latest
+
     concurrency:
       group: qa-repair-${{ github.event.issue.number }}
       cancel-in-progress: false
+
     steps:
       - name: Read PR branch
         id: pr
@@ -25,29 +31,60 @@ jobs:
           GH_REPO: ${{ github.repository }}
           PR_NUMBER: ${{ github.event.issue.number }}
         run: |
-          gh api "repos/$GH_REPO/pulls/$PR_NUMBER" --jq '.head.ref' > branch.txt
+          gh api "repos/$GH_REPO/pulls/$PR_NUMBER" \
+            --jq '.head.ref' > branch.txt
+
           BRANCH="$(cat branch.txt)"
+
           case "$BRANCH" in
             ai/approved-*) ;;
-            *) echo 'Not an approved development branch'; exit 1 ;;
+            *)
+              echo "Not an approved development branch"
+              exit 1
+              ;;
           esac
+
           echo "branch=$BRANCH" >> "$GITHUB_OUTPUT"
-      - uses: actions/checkout@v4
+
+      - name: Checkout QA tools
+        uses: actions/checkout@v4
         with:
           ref: main
           path: qa-tools
-      - uses: actions/checkout@v4
+          persist-credentials: false
+
+      - name: Checkout PR branch
+        uses: actions/checkout@v4
         with:
           ref: ${{ steps.pr.outputs.branch }}
+          path: game-pr
           persist-credentials: true
-      - uses: actions/setup-python@v5
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
         with:
           python-version: '3.11'
+
+      - name: Check file locations
+        run: |
+          echo "Current directory:"
+          pwd
+
+          echo "QA program:"
+          ls -la qa-tools/scripts/qa_repair.py
+
+          echo "Game source:"
+          ls -la game-pr/index.html
+
+          echo "Git branch:"
+          git -C game-pr branch --show-current
+
       - name: QA repair and verify
+        working-directory: game-pr
         env:
           GH_TOKEN: ${{ github.token }}
           REPOSITORY: ${{ github.repository }}
           PR_NUMBER: ${{ github.event.issue.number }}
           COMMENT_BODY: ${{ github.event.comment.body }}
           COMMENT_ID: ${{ github.event.comment.id }}
-        run: python qa-tools/scripts/qa_repair.py
+        run: python ../qa-tools/scripts/qa_repair.py
