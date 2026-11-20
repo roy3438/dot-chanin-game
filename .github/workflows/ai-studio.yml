@@ -1,0 +1,39 @@
+name: AI Studio Integrated Development
+
+on:
+  issue_comment:
+    types: [created]
+
+permissions: {}
+
+concurrency:
+  group: studio-issue-${{ github.event.issue.number }}
+  cancel-in-progress: false
+
+jobs:
+  run:
+    if: >-
+      github.event.issue.pull_request == null &&
+      github.event.issue.state == 'open' &&
+      github.event.comment.user.login == (vars.STUDIO_OWNER || github.repository_owner) &&
+      (startsWith(github.event.comment.body, '/studio plan ') ||
+      startsWith(github.event.comment.body, '/studio approve '))
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    permissions:
+      contents: write
+      issues: write
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Run studio
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          GEMINI_MODEL: ${{ vars.GEMINI_MODEL }}
+          COLLAB_MODEL: ${{ vars.COLLAB_MODEL }}
+          STUDIO_OWNER: ${{ vars.STUDIO_OWNER || github.repository_owner }}
+        run: python3 -I -B scripts/studio/engine.py
