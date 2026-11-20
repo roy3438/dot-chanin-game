@@ -195,11 +195,23 @@ def validate_plan(plan, inventory):
         require(entry == "index.html", "기존 게임의 진입점은 루트 index.html이어야 합니다.")
     tests = plan["tests"]
     require(isinstance(tests, list) and 1 <= len(tests) <= 6, "브라우저 시나리오 1~6개가 필요합니다.")
-    for scenario in tests:
-        require(isinstance(scenario, dict) and set(scenario) == {"name", "steps"} and
+    for number, scenario in enumerate(tests, 1):
+        require(isinstance(scenario, dict) and set(scenario) in ({"name", "steps"}, {"name", "steps", "seed"}) and
                 string(scenario["name"], 70), "브라우저 시나리오 이름 오류")
+        if "seed" in scenario:
+            seed = scenario["seed"]
+            require(isinstance(seed, dict) and 1 <= len(seed) <= 8 and
+                    all(re.fullmatch(r"[A-Za-z0-9_.:-]{1,80}", key) for key in seed),
+                    f"시나리오 {number}: seed는 저장 키 1~8개인 객체여야 합니다.")
+            try:
+                size = len(json.dumps(seed, ensure_ascii=False, allow_nan=False).encode())
+            except (TypeError, ValueError, OverflowError):
+                raise Stop(f"시나리오 {number}: seed는 유효한 JSON이어야 합니다.") from None
+            require(size <= 4096, f"시나리오 {number}: seed는 4096바이트 이하여야 합니다.")
         actions = scenario["steps"]
-        require(isinstance(actions, list) and 3 <= len(actions) <= 14, "시나리오 단계 수 오류")
+        count = len(actions) if isinstance(actions, list) else 0
+        require(isinstance(actions, list) and 3 <= count <= 14,
+                f"시나리오 {number}: 단계 수 {count}개. 허용 범위 3~14개.")
         changed = False
         checked = False
         for action in actions:
@@ -217,7 +229,7 @@ def validate_plan(plan, inventory):
                 changed = True
             if kind == "text" and changed:
                 checked = True
-        require(checked, "조작 후 화면의 실제 텍스트를 검증해야 합니다.")
+        require(checked, f"시나리오 {number}: 조작 후 화면의 실제 텍스트를 검증해야 합니다.")
 
 
 def build_plan(ai, task, inventory, assets):
@@ -244,6 +256,11 @@ def build_plan(ai, task, inventory, assets):
         "PC와 모바일에서 공통 실행합니다. 시나리오 1~6개, 각각 3~14단계로 작성하세요. "
         "조작 뒤 반드시 text 단계로 예상 표시값을 확인하세요. 승리·패배·재시작은 별도 시나리오로 나누세요. "
         "지원 명령 visible, text, click, drag(selector,target), key(value), reload. "
+        "각 시나리오는 독립 브라우저입니다. 시나리오에 선택 사항 seed를 넣으면 첫 로드 전에 "
+        "localStorage에 승인된 초기 상태를 한 번 설정합니다. 예: {\"seed\":{\"game-key\":{\"level\":2}}}. "
+        "문자열은 그대로, 나머지는 JSON 문자열로 저장합니다. 실제 저장 스키마와 맞추고 "
+        "클리어 직전 보드·해금 상태만 준비한 뒤 실제 클릭·드래그로 결과를 만드세요. "
+        "reload에는 seed를 다시 쓰지 않습니다. 테스트 버튼이나 결과를 미리 저장하는 방식은 금지합니다. "
         "키보드 전용 시험이면 모바일 사용자를 위한 별도 조작 시나리오도 넣으세요.")
     payload = context | {"team_reports": reports}
     plan = ai.ask(prompt, payload, 4200)

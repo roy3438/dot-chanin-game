@@ -28,6 +28,9 @@ jobs:
           python -m pip install playwright==1.58.0
           python -m playwright install --with-deps chromium
 
+      - name: Verify Studio browser state setup
+        run: python scripts/studio/test_browser.py
+
       - name: Run desktop and mobile browser QA
         run: |
           if grep -Fq 'dot-chain-v1' index.html && grep -Fq 'id="path-layer"' index.html; then

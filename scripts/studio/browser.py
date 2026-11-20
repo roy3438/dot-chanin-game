@@ -112,6 +112,15 @@ def run_case(browser, origin, entry, scenario, viewport, touch):
     page.on("response", lambda response: problems.append(f"HTTP {response.status}: {response.url}")
             if response.status >= 400 else None)
     try:
+        if "seed" in scenario:
+            setup = origin + "/__studio_seed__"
+            page.route(setup, lambda route: route.fulfill(status=200, content_type="text/html", body="<!doctype html>"),
+                       times=1)
+            page.goto(setup, wait_until="load", timeout=5000)
+            seed = {key: value if isinstance(value, str) else json.dumps(value, ensure_ascii=False, allow_nan=False)
+                    for key, value in scenario["seed"].items()}
+            page.evaluate("(seed) => Object.entries(seed).forEach(([key, value]) => localStorage.setItem(key, value))",
+                          seed)
         response = page.goto(origin + "/" + entry, wait_until="load", timeout=5000)
         assert response and response.ok, "Game entry point failed to load"
         assert page.title().strip(), "Page title is missing"
