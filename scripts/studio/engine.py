@@ -232,6 +232,81 @@ def validate_plan(plan, inventory):
         require(checked, f"시나리오 {number}: 조작 후 화면의 실제 텍스트를 검증해야 합니다.")
 
 
+def validate_task_plan(plan, inventory, task):
+    validate_plan(plan, inventory)
+    if "[dot-chain-levels]" not in task:
+        return
+
+    files = {path: operation for step in plan["steps"] for path, operation in step["files"].items()}
+    require(plan["mode"] == "update-game" and files == {
+        "index.html": "write", "style.css": "write", "script.js": "write",
+    }, "레벨업 계획은 HTML·CSS·JS 세 파일을 각각 한 번 변경해야 합니다.")
+
+    outcomes = set()
+    for scenario in plan["tests"]:
+        actions = scenario["steps"]
+        outcome = next((a["value"] for a in actions
+                        if a["do"] == "text" and a["selector"] == "#result-title"), None)
+        if outcome is None:
+            if actions[-1].get("selector") == "#mute-btn" and actions[-1].get("value") == "음소거 켜짐":
+                kinds = [a["do"] for a in actions]
+                require("reload" in kinds and any(a["do"] == "click" and a["selector"] == "#mute-btn"
+                        for a in actions[:kinds.index("reload")]), "음소거 변경 뒤 새로고침이 필요합니다.")
+                outcomes.add("mute")
+            continue
+        raw = scenario.get("seed", {}).get("dot-chain-v1")
+        try:
+            state = json.loads(raw) if isinstance(raw, str) else raw
+        except ValueError:
+            state = None
+        require(isinstance(state, dict) and state.get("phase") == "playing",
+                "승패 시험은 dot-chain-v1의 진행 중 상태에서 시작해야 합니다.")
+        level = state.get("level")
+        board = state.get("board")
+        require(isinstance(board, list) and len(board) == 36 and
+                all(color in ("red", "blue", "yellow", "green") for color in board),
+                "시험 보드는 올바른 색상 36칸이어야 합니다.")
+        drag = next((a for a in actions if a["do"] == "drag"), None)
+        require(drag is not None, "승패 시험에 실제 드래그가 필요합니다.")
+        end = 4 if level == 2 else 1
+        for key, position in (("selector", 0), ("target", end)):
+            require(drag[key] in (f'[data-pos="{position}"]', f"[data-pos='{position}']"),
+                    f"레벨 {level} 시험은 0번에서 {end}번까지 드래그해야 합니다.")
+        require(board[:end + 1] == ["red"] * (end + 1),
+                f"레벨 {level} 시험 보드의 0~{end}번은 모두 빨강이어야 합니다.")
+        result_position = next(i for i, a in enumerate(actions)
+                               if a["do"] == "text" and a["selector"] == "#result-title")
+        require(actions.index(drag) < result_position, "승패 표시는 드래그 뒤 검증해야 합니다.")
+        after = actions[result_position + 1:]
+        if level == 1 and outcome == "승리!":
+            require(state.get("score") == 1980 and state.get("unlocked") == 1 and state.get("mission") is None,
+                    "레벨 1 승리 시험은 1980점·미션 없음·레벨 1만 해금된 상태에서 시작해야 합니다.")
+            require(any(a["do"] == "click" and a["selector"] == "#next-level" for a in after) and
+                    any(a["do"] == "reload" for a in after) and after[-1].get("value") == "레벨 2",
+                    "레벨 2 진입 클릭과 새로고침 후 레벨 2 표시 검증이 필요합니다.")
+            outcomes.add("unlock")
+        elif level == 1 and outcome == "패배":
+            require(state.get("score") == 100 and state.get("moves") == 1 and state.get("mission") is None and
+                    any(a["do"] == "click" and a["selector"] == "#restart" for a in after) and
+                    after[-1].get("selector") == "#moves" and after[-1].get("value") == "20",
+                    "패배 시험은 100점·1수·미션 없음에서 시작해 재도전 후 20수를 확인해야 합니다.")
+            outcomes.add("retry")
+        elif level == 2 and outcome == "승리!":
+            require(state.get("score") == 1900 and state.get("unlocked") == 2 and
+                    isinstance(state.get("missionProgress", {}), dict) and
+                    state.get("missionProgress", {}).get("longChain", False) is False,
+                    "레벨 2는 1900점이며 긴 연결을 달성하기 전이어야 합니다.")
+            outcomes.add("long-chain")
+        elif level == 3 and outcome == "전체 클리어!":
+            require(state.get("score") == 1980 and state.get("unlocked") == 3 and
+                    state.get("missionProgress") == {"red": 4, "blue": 6},
+                    "레벨 3은 1980점, 미션 진행 빨강 4개·파랑 6개에서 시작해야 합니다.")
+            outcomes.add("finish")
+
+    require(outcomes == {"unlock", "retry", "long-chain", "finish", "mute"},
+            "해금·재도전·긴 연결·최종 클리어·음소거 시험을 모두 넣어야 합니다.")
+
+
 def build_plan(ai, task, inventory, assets):
     context = {"request": task, "source": source_context(assets), "file_inventory": sorted(assets)}
     reports = {}
@@ -265,12 +340,12 @@ def build_plan(ai, task, inventory, assets):
     payload = context | {"team_reports": reports}
     plan = ai.ask(prompt, payload, 4200)
     try:
-        validate_plan(plan, inventory)
+        validate_task_plan(plan, inventory, task)
     except Stop as error:
         print(f"계획 검증 실패, 한 번 보정: {error}", flush=True)
         plan = ai.ask(prompt + " 검증 오류를 수정하고 전체 계획을 다시 반환하세요.",
                       payload | {"validation_error": str(error), "previous_plan": plan}, 4200)
-        validate_plan(plan, inventory)
+        validate_task_plan(plan, inventory, task)
     return plan, reports
 
 
@@ -451,7 +526,7 @@ def read_approval(issue, plan_id, base_branch, base, inventory):
     require(envelope["base"] == base and envelope["branch"] == base_branch,
             "계획 이후 기준 소스가 변경되었습니다. 다시 계획을 생성하세요.")
     require(envelope["issue"] == issue, "계획의 Issue가 일치하지 않습니다.")
-    validate_plan(envelope["plan"], inventory)
+    validate_task_plan(envelope["plan"], inventory, envelope["task"])
     return envelope
 
 
