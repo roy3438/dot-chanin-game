@@ -377,12 +377,16 @@ def build_plan(ai, task, inventory, assets):
     return plan, reports
 
 
-def change_files(ai, instructions, payload, scope, assets, required):
-    response = ai.ask(instructions + ' JSON: {"files":{"경로":"전체 파일 내용","삭제 대상":null}}. '
-                      "승인 범위의 경로와 유형만 쓰세요. 파일은 UTF-8 텍스트입니다.", payload, 16000)
+def apply_file_response(response, scope, assets, required):
     proposed = response.get("files")
-    require(isinstance(proposed, dict) and proposed and set(proposed) <= set(scope) and
-            (not required or set(proposed) == set(scope)), "승인된 파일 범위를 벗어났거나 전체 파일이 누락됐습니다.")
+    require(isinstance(proposed, dict) and proposed,
+            "모델 응답에 비어 있지 않은 files 객체가 필요합니다.")
+    unexpected = set(proposed) - set(scope)
+    missing = set(scope) - set(proposed) if required else set()
+    require(not unexpected and not missing,
+            f"범위 밖 파일 {len(unexpected)}개, 누락된 필수 파일 {len(missing)}개. "
+            f"허용 파일: {', '.join(sorted(scope))}.")
+
     updated = dict(assets)
     for path, content in proposed.items():
         if scope[path] == "delete":
@@ -395,6 +399,25 @@ def change_files(ai, instructions, payload, scope, assets, required):
     source_context(updated)
     return updated
 
+
+def change_files(ai, instructions, payload, scope, assets, required):
+    shape = {"files": {path: None if operation == "delete" else "전체 파일 내용"
+                       for path, operation in scope.items()}}
+    selection = "모든 파일을 포함하세요." if required else "수정한 파일 하나 이상만 포함하세요."
+    prompt = (instructions + " 아래 JSON의 파일명만 허용됩니다. " + selection +
+              " write는 전체 UTF-8 내용, delete는 null입니다. 테스트나 워크플로는 수정하지 마세요. " +
+              canonical(shape))
+    request_data = payload | {"allowed_files": scope}
+    response = ai.ask(prompt, request_data, 16000)
+    try:
+        return apply_file_response(response, scope, assets, required)
+    except Stop as error:
+        print(f"파일 응답 검증 실패, 한 번 보정: {error}", flush=True)
+        correction = ai.ask(
+            prompt + " 직전 응답 대신 오류를 바로잡은 새 JSON을 반환하세요.",
+            request_data | {"validation_error": str(error)}, 16000,
+        )
+        return apply_file_response(correction, scope, assets, required)
 
 def deploy_candidate(ai, plan, task, baseline, qa, progress):
     assets = baseline
