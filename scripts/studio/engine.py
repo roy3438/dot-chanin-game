@@ -7,6 +7,7 @@ import re
 import subprocess
 import sys
 import tempfile
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -38,6 +39,10 @@ def require(condition, message):
         raise Stop(message)
 
 
+class TemporaryGeminiError(Stop):
+    """A transient provider failure safe to retry."""
+
+
 def canonical(value):
     return json.dumps(value, sort_keys=True, ensure_ascii=False, separators=(",", ":"))
 
@@ -47,15 +52,18 @@ def request(url, method, headers, data=None, timeout=75):
         url, data=canonical(data).encode() if data is not None else None,
         method=method, headers={"User-Agent": "ai-game-studio", "Content-Type": "application/json", **headers},
     )
+    host = urllib.parse.urlsplit(url).hostname
     try:
         with urllib.request.urlopen(req, timeout=timeout) as response:
             return json.load(response)
     except urllib.error.HTTPError as error:
-        raise Stop(f"{urllib.parse.urlsplit(url).hostname} HTTP {error.code}") from None
+        kind = TemporaryGeminiError if host == "generativelanguage.googleapis.com" and error.code in (500, 502, 503, 504) else Stop
+        raise kind(f"{host} HTTP {error.code}") from None
     except (urllib.error.URLError, TimeoutError) as error:
         reason = error.reason if isinstance(error, urllib.error.URLError) else error
         category = "응답 시간 초과" if isinstance(reason, TimeoutError) else f"연결 실패 ({type(reason).__name__})"
-        raise Stop(f"{urllib.parse.urlsplit(url).hostname} {category}") from None
+        kind = TemporaryGeminiError if host == "generativelanguage.googleapis.com" and isinstance(reason, TimeoutError) else Stop
+        raise kind(f"{host} {category}") from None
 
 
 def github(method, route, data=None):
@@ -67,8 +75,20 @@ def github(method, route, data=None):
 class Gemini:
     def __init__(self, model=None):
         self.calls = 0
+        self.retries = 0
         self.model = model
         self.checked = False
+
+    def request(self, *args, **kwargs):
+        try:
+            return request(*args, **kwargs)
+        except TemporaryGeminiError as error:
+            if self.retries >= 2:
+                raise
+            self.retries += 1
+            print(f"Gemini 일시 오류, 5초 후 재시도 ({self.retries}/2): {error}", flush=True)
+            time.sleep(5)
+        return request(*args, **kwargs)
 
     def ask(self, instructions, data, tokens):
         model = (self.model or os.environ.get("GEMINI_MODEL", "")).strip()
@@ -81,7 +101,7 @@ class Gemini:
         if not self.checked:
             print(f"Gemini 모델 조회 시작: {model}", flush=True)
             try:
-                request(endpoint, "GET", headers, timeout=20)
+                self.request(endpoint, "GET", headers, timeout=20)
             except Stop as error:
                 raise Stop(f"Gemini 모델 조회 실패 ({model}): {error}") from None
             self.checked = True
@@ -90,7 +110,7 @@ class Gemini:
         print(f"Gemini 생성 요청 {self.calls}/11 시작: {model}", flush=True)
         prompt = canonical(data)
         require(len(prompt.encode()) <= 350_000, "Gemini 입력 범위를 초과했습니다. 업무 단위를 줄이세요.")
-        result = request(
+        result = self.request(
             endpoint + ":generateContent", "POST", headers,
             {"systemInstruction": {"parts": [{"text": (
                 "당신은 HTML CSS JS 기반 정적 브라우저 게임 스튜디오의 담당자입니다. "
@@ -515,7 +535,7 @@ def plan_message(envelope, team):
             + "    studio-data " + base64.b64encode(canonical(envelope).encode()).decode())
 
 
-def read_approval(issue, plan_id, base_branch, base, inventory):
+def read_approval(issue, plan_id, base_branch, base, inventory, retry=False):
     approved = github("GET", f"/issues/comments/{plan_id}")
     body = approved["body"]
     expected = f"https://api.github.com/repos/{os.environ['GITHUB_REPOSITORY']}/issues/{issue}"
@@ -523,22 +543,52 @@ def read_approval(issue, plan_id, base_branch, base, inventory):
             and approved["issue_url"] == expected and body.startswith(MARKER + "\n"),
             "같은 Issue에 등록된 자동화 계획 댓글 ID가 필요합니다.")
     envelope = json.loads(base64.b64decode(body.split("\n    studio-data ")[-1], validate=True))
-    require(envelope["base"] == base and envelope["branch"] == base_branch,
+    approved_base = envelope["base"]
+    same_game = approved_base == base or (retry and unchanged_game_tree(approved_base, base))
+    require(same_game and envelope["branch"] == base_branch,
             "계획 이후 기준 소스가 변경되었습니다. 다시 계획을 생성하세요.")
     require(envelope["issue"] == issue, "계획의 Issue가 일치하지 않습니다.")
     validate_task_plan(envelope["plan"], inventory, envelope["task"])
     return envelope
 
 
-def claim(issue, plan_id):
-    """Reject repeat approvals and reruns of a claimed plan."""
+def unchanged_game_tree(before, after):
+    def game_entries(sha):
+        tree_sha = github("GET", f"/git/commits/{sha}")["tree"]["sha"]
+        tree = github("GET", f"/git/trees/{tree_sha}")
+        require(not tree.get("truncated"), "소스 트리를 모두 읽을 수 없습니다.")
+        return {entry["path"]: (entry["mode"], entry["sha"]) for entry in tree["tree"]
+                if entry["path"] not in (".github", "scripts")}
+    return game_entries(before) == game_entries(after)
+
+
+def retry_approval(issue, comment_id, owner):
+    original = github("GET", f"/issues/comments/{comment_id}")
+    issue_url = f"https://api.github.com/repos/{os.environ['GITHUB_REPOSITORY']}/issues/{issue}"
+    command = re.fullmatch(r"/studio approve ([1-9][0-9]{0,19})", original["body"].strip())
+    require(original["issue_url"] == issue_url and original["user"]["login"] == owner and command,
+            "같은 Issue의 대표 승인 댓글 번호가 필요합니다.")
+    branch = f"studio/issue-{issue}-{comment_id}"
+    # Includes closed and merged PRs, even if their branches were deleted.
+    head = urllib.parse.urlencode({"state": "all", "head": f"{os.environ['GITHUB_REPOSITORY'].split('/')[0]}:{branch}"})
+    require(not github("GET", f"/pulls?{head}"), "이 승인으로 이미 PR이 생성되었습니다.")
+    require(not github("GET", f"/git/matching-refs/heads/{branch}"), "이 승인의 개발 브랜치가 이미 있습니다.")
+    return command[1]
+
+
+def claim(issue, plan_id, retry_comment_id=None):
+    retry = retry_comment_id is not None
+    """Only a new approval or an explicit retry of a claimed approval may run."""
     marker = f"<!-- studio-claim:{plan_id} -->"
     for page in range(1, 21):
         comments = github("GET", f"/issues/{issue}/comments?per_page=100&page={page}")
         for item in comments:
-            require(not (item["user"]["login"] == BOT and item["body"].startswith(marker)),
-                    "이 계획은 이미 실행을 시작했습니다. 다시 시도하려면 새 계획을 요청하세요.")
+            if item["user"]["login"] == BOT and item["body"].startswith(marker):
+                require(retry, "이미 실행된 계획입니다. PR 생성 전 실패했다면 /studio retry <승인댓글ID>를 사용하세요.")
+                require(int(item["id"]) > retry_comment_id, "실행 접수보다 앞선 승인 댓글이 필요합니다.")
+                return
         if len(comments) < 100:
+            require(not retry, "실행이 시작된 승인만 재시도할 수 있습니다.")
             comment(issue, marker + "\n\n승인 확인. 개발을 시작합니다.")
             return
     raise Stop("댓글 수가 너무 많습니다. 새 Issue에서 요청하세요.")
@@ -553,7 +603,8 @@ def main():
         return
     plan_cmd = re.fullmatch(r"/studio plan\s+(.+)", cmd, re.DOTALL)
     approval = re.fullmatch(r"/studio approve ([1-9][0-9]{0,19})", cmd)
-    if not (plan_cmd or approval):
+    retry = re.fullmatch(r"/studio retry ([1-9][0-9]{0,19})", cmd)
+    if not (plan_cmd or approval or retry):
         return
     base = git("rev-parse", "HEAD").decode().strip()
     base_branch = event["repository"]["default_branch"]
@@ -577,11 +628,13 @@ def main():
             require(len(message.encode()) <= 64_000, "계획 댓글이 너무 큽니다. 작업 범위를 줄이세요.")
             comment(issue, message)
         else:
-            envelope = read_approval(issue, approval[1], base_branch, base, inventory)
-            claim(issue, approval[1])
+            approval_id = int(retry[1]) if retry else event["comment"]["id"]
+            plan_id = retry_approval(issue, approval_id, owner) if retry else approval[1]
+            envelope = read_approval(issue, plan_id, base_branch, base, inventory, retry=bool(retry))
+            claim(issue, plan_id, retry_comment_id=approval_id if retry else None)
             updated, scope, repairs = deploy_candidate(
                 ai, envelope["plan"], envelope["task"], assets, run_qa, progress)
-            pr = publish(issue, event["comment"]["id"], base_branch, base, assets, updated, scope, repairs)
+            pr = publish(issue, approval_id, base_branch, base, assets, updated, scope, repairs)
             comment(issue, f"브라우저 QA 통과. 자동 수정 {repairs}회. [검토용 초안 PR]({pr['html_url']}) "
                            f"· [실행 기록]({run})")
     except Exception as error:
