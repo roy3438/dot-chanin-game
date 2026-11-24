@@ -7,7 +7,7 @@ import threading
 import traceback
 from playwright.sync_api import sync_playwright
 
-ROOT = pathlib.Path(__file__).resolve().parents[1]
+ROOT = pathlib.Path(__file__).resolve().parent.parent
 EVIDENCE = ROOT / "qa-evidence"
 KEY = "dot-chain-v1"
 PORT = 8765
