@@ -22,6 +22,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 35
     permissions:
+      actions: read
       contents: write
       issues: write
       pull-requests: write
@@ -43,25 +44,38 @@ jobs:
                   print("approval=" + match[1], file=output)
       - name: Restore approved candidate
         if: steps.resume.outputs.approval != ''
-        uses: actions/cache/restore@5a3ec84eff668545956fd18022155c47e93e2684
-        with:
-          path: ${{ runner.temp }}/studio-checkpoint
-          key: studio-v1-${{ github.sha }}-${{ github.event.issue.number }}-${{ steps.resume.outputs.approval }}-${{ github.run_id }}-${{ github.run_attempt }}
-          restore-keys: |
-            studio-v1-${{ github.sha }}-${{ github.event.issue.number }}-${{ steps.resume.outputs.approval }}-
+        env:
+          GH_TOKEN: ${{ github.token }}
+          STUDIO_CHECKPOINT: ${{ runner.temp }}/studio-checkpoint
+          CHECKPOINT_NAME: studio-${{ github.sha }}-${{ github.event.issue.number }}-${{ steps.resume.outputs.approval }}
+        run: python3 -I scripts/studio/checkpoint_artifact.py restore
       - name: Run studio
         env:
           STUDIO_CHECKPOINT: ${{ runner.temp }}/studio-checkpoint
           GH_TOKEN: ${{ github.token }}
+          STUDIO_REPAIR_BYTES: ${{ vars.STUDIO_REPAIR_BYTES }}
           GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           GEMINI_MODEL: ${{ vars.GEMINI_MODEL }}
           COLLAB_MODEL: ${{ vars.COLLAB_MODEL }}
           STUDIO_OWNER: ${{ vars.STUDIO_OWNER || github.repository_owner }}
         run: python3 -I -B scripts/studio/engine.py
-      - name: Preserve candidate for explicit retry
+      - name: Seal candidate on failure
+        id: seal
         if: failure() && steps.resume.outputs.approval != ''
-        uses: actions/cache/save@5a3ec84eff668545956fd18022155c47e93e2684
+        env:
+          STUDIO_CHECKPOINT: ${{ runner.temp }}/studio-checkpoint
+        run: |
+          if test -f "$STUDIO_CHECKPOINT/candidate.json"; then
+            python3 -I scripts/studio/checkpoint_artifact.py seal
+            echo "ready=true" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Preserve candidate for explicit retry
+        if: failure() && steps.seal.outputs.ready == 'true'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
-          path: ${{ runner.temp }}/studio-checkpoint
-          key: studio-v1-${{ github.sha }}-${{ github.event.issue.number }}-${{ steps.resume.outputs.approval }}-${{ github.run_id }}-${{ github.run_attempt }}
+          name: studio-${{ github.sha }}-${{ github.event.issue.number }}-${{ steps.resume.outputs.approval }}
+          path: ${{ runner.temp }}/studio-checkpoint/
+          if-no-files-found: error
+          overwrite: true
+          retention-days: 7
