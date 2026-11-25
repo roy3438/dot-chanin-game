@@ -60,7 +60,7 @@ def gesture(page):
         arg=[KEY, previous_moves], timeout=5000
     )
 
-def run_case(browser, label, viewport, touch):
+def run_case(browser, label, viewport, touch, probe_only=False):
     context = browser.new_context(
         viewport=viewport, has_touch=touch, is_mobile=touch,
         device_scale_factor=1,
@@ -80,10 +80,21 @@ def run_case(browser, label, viewport, touch):
         ), "Horizontal overflow"
 
         # Seed a valid deterministic board to avoid random test outcomes.
-        put_state(page, saved_state())
+        seed = saved_state()
+        put_state(page, seed)
         gesture(page)
         state = read_state(page)
-        assert state["score"] == 40, f"Expected 40 points, got {state['score']}"
+        observed = {key: state.get(key) for key in ("score", "moves", "phase", "level")}
+        expected = {"score": 40, "moves": 19}
+        if any(observed[key] != value for key, value in expected.items()):
+            evidence = {"case": "two_adjacent_dots", "device": label, "seed": seed,
+                        "action": "drag cell 0 to adjacent cell 1", "expected": expected,
+                        "observed": observed}
+            print("STUDIO_EVIDENCE " + json.dumps(evidence, separators=(",", ":")), flush=True)
+            raise AssertionError(f"Expected {expected}, observed {observed}")
+        if probe_only:
+            print(f"PASS {label}: two adjacent dots, moves={state['moves']} score={state['score']}", flush=True)
+            return
         assert state["moves"] == 19
         assert page.locator("#score").inner_text() == "40"
         assert page.locator("#moves").inner_text() == "19"
