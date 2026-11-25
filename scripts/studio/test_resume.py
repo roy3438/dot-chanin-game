@@ -44,6 +44,21 @@ class RetryTests(unittest.TestCase):
             resumed.ask.assert_not_called()
             self.assertEqual((assets["index.html"], repairs), (b"candidate", 0))
 
+    def test_repair_size_uses_serialized_utf8_before_transport(self):
+        data = {"browser_result": "시험", "source": {"game.js": "한" * 50}}
+        with patch.dict(engine.os.environ, {"GROQ_API_KEY": "fixture", "STUDIO_REPAIR_BYTES": "4096"}), patch.object(engine, "request_groq") as network:
+            network.return_value = {"choices": [{"finish_reason": "stop", "message": {"content": "{}"}}]}
+            engine.Groq().ask("fixture", data, 100)
+            size = len(engine.canonical(network.call_args.args[2]).encode())
+            network.reset_mock()
+            with patch.dict(engine.os.environ, {"STUDIO_REPAIR_BYTES": str(size - 1)}):
+                with self.assertRaisesRegex(engine.Stop, "전송 전 중단"):
+                    engine.Groq().ask("fixture", data, 100)
+            network.assert_not_called()
+            with patch.dict(engine.os.environ, {"STUDIO_REPAIR_BYTES": str(size)}):
+                engine.Groq().ask("fixture", data, 100)
+            network.assert_called_once()
+
     def test_level_two_short_chain_is_independent(self):
         original = {"level": 2, "score": 1900, "moves": 5, "missionProgress": {"longChain": False}}
         plan = {"tests": [{"seed": {"dot-chain-v1": json.dumps(original)}}]}
