@@ -145,7 +145,7 @@ def run_case(browser, origin, entry, scenario, viewport, touch):
         context.close()
 
 
-def baseline_suite(browser, root, port, probe_only=False):
+def baseline_suite(browser, root, port, plan):
     path = Path("/dot_qa.py")
     if not path.exists():
         path = Path(__file__).resolve().parents[1] / "browser_qa.py"
@@ -161,7 +161,8 @@ def baseline_suite(browser, root, port, probe_only=False):
     suite.PORT = port
     for device, viewport, touch in VIEWPORTS:
         try:
-            suite.run_case(browser, device, viewport, touch, probe_only=probe_only)
+            suite.run_case(browser, device, viewport, touch, probe_only=plan.get("probe_only", False),
+                           scenarios=plan["tests"], verify_fields=plan.get("verify_fields", []))
         except (AssertionError, BrowserTimeout) as error:
             raise AssertionError(f"STUDIO_QA_CASE_FAILURE {device} / 기존 DOT CHAIN 회귀 시험: {error}") from error
 
@@ -184,10 +185,10 @@ def run(root, plan):
                     raise
                 try:
                     if plan["dot_chain_regression"]:
-                        baseline_suite(browser, root, port, plan.get("probe_only", False))
+                        baseline_suite(browser, root, port, plan)
                     failures = []
                     for device, viewport, touch in VIEWPORTS:
-                        for scenario in plan["tests"]:
+                        for scenario in ([] if plan.get("probe_only") else plan["tests"]):
                             label = f"{device} / {scenario['name']}"
                             try:
                                 run_case(browser, origin, plan["entry"], scenario, viewport, touch)
