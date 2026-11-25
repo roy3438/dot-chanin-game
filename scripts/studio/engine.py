@@ -453,11 +453,12 @@ def deploy_candidate(ai, plan, task, baseline, qa, progress, groq_step_two=False
     if groq_step_two:
         require(len(plan['steps']) >= 2 and os.environ.get('GROQ_API_KEY'),
                 'Groq 시험에는 개발 2단계와 GROQ_API_KEY 시크릿이 필요합니다.')
+    groq_developer = Groq() if groq_step_two else None
     assets = baseline
     scope = {}
     for number, step in enumerate(plan["steps"], 1):
         progress(f"개발 {number}/{len(plan['steps'])}")
-        developer = Groq() if groq_step_two and number == 2 else ai
+        developer = groq_developer if groq_step_two and number == 2 else ai
         assets = change_files(developer, "개발 담당. 현재 단계의 파일 전체를 구현하세요.",
                               {"task": task, "plan": plan, "stage": step, "source": source_context(assets)},
                               step["files"], assets, True)
@@ -486,7 +487,7 @@ def deploy_candidate(ai, plan, task, baseline, qa, progress, groq_step_two=False
             raise Stop("QA 자동 수정 2회 후 중단. 최근 결과\n" +
                        safe_block(canonical({"검토": review, "브라우저": log})[:3800]))
         progress(f"QA 수정 {attempt + 1}/2")
-        assets = change_files(ai, "개발 담당. 승인된 시험을 통과하도록 원인을 수정하세요.",
+        assets = change_files(groq_developer or ai, "개발 담당. 승인된 시험을 통과하도록 원인을 수정하세요.",
                               {"scope": scope, "plan": plan, "source": source_context(assets),
                                "review_findings": review, "browser_result": log},
                               scope, assets, False)
