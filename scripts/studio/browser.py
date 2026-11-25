@@ -12,7 +12,7 @@ if Path("/qa-driver").is_dir():
     sys.path.insert(0, "/qa-driver")
 
 try:
-    from playwright.sync_api import expect, sync_playwright
+    from playwright.sync_api import TimeoutError as BrowserTimeout, expect, sync_playwright
 except ImportError:
     print("STUDIO_QA_INFRA", file=sys.stderr, flush=True)
     raise
@@ -85,6 +85,13 @@ def execute(page, action, touch):
         drag(page, item, page.locator(action["target"]), touch)
     elif kind == "key":
         page.keyboard.press(action["value"])
+    elif kind == "playing-after-short-chain":
+        page.wait_for_function("""() => {
+            const state = JSON.parse(localStorage.getItem('dot-chain-v1'));
+            return state && state.moves === 4 && state.score >= 2000 && state.phase === 'playing'
+                && state.missionProgress?.longChain === false;
+        }""", timeout=2500)
+        expect(page.locator("#result")).to_be_hidden()
     elif kind == "reload":
         page.reload(wait_until="load")
     else:
@@ -130,7 +137,7 @@ def run_case(browser, origin, entry, scenario, viewport, touch):
         for index, action in enumerate(scenario["steps"], 1):
             try:
                 execute(page, action, touch)
-            except Exception as error:
+            except (AssertionError, BrowserTimeout) as error:
                 raise AssertionError(f"Step {index} ({action['do']}): {error}") from None
         assert page.evaluate("document.documentElement.scrollWidth <= innerWidth + 1"), "Horizontal overflow"
         assert not problems, str(problems[:5])
@@ -153,7 +160,10 @@ def baseline_suite(browser, root, port):
     suite.EVIDENCE = Path("/tmp/studio-dot-evidence")
     suite.PORT = port
     for device, viewport, touch in VIEWPORTS:
-        suite.run_case(browser, device, viewport, touch)
+        try:
+            suite.run_case(browser, device, viewport, touch)
+        except (AssertionError, BrowserTimeout) as error:
+            raise AssertionError(f"STUDIO_QA_CASE_FAILURE {device} / 기존 DOT CHAIN 회귀 시험: {error}") from error
 
 
 def run(root, plan):
@@ -182,10 +192,10 @@ def run(root, plan):
                             try:
                                 run_case(browser, origin, plan["entry"], scenario, viewport, touch)
                                 print(f"PASS {label}", flush=True)
-                            except Exception as error:
+                            except (AssertionError, BrowserTimeout) as error:
                                 failures.append(f"FAIL {label}: {str(error)[:500]}")
                     if failures:
-                        raise AssertionError("\n".join(failures))
+                        raise AssertionError("\n".join(failures) + "\nSTUDIO_QA_CASE_FAILURE")
                 finally:
                     browser.close()
         finally:
