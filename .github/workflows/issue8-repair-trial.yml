@@ -9,7 +9,7 @@ permissions:
 jobs:
   replay:
     if: >-
-      github.run_attempt == 1 && github.event.before == '780c77705bd88b8483068d05eca3fb3ff0b9003e' &&
+      github.run_attempt == 1 && github.event.before == 'b44faaad5e7b06d6e2fde806a910f75993590fd9' &&
       github.event.pull_request.head.repo.full_name == github.repository &&
       github.head_ref == 'studio/repair-from-evidence' &&
       github.event.pull_request.user.login == github.repository_owner
@@ -24,7 +24,8 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           mkdir -p "$RUNNER_TEMP/issue8"
-          gh run download 45550445598 --repo "$GITHUB_REPOSITORY" --name issue8-repair-trial --dir "$RUNNER_TEMP/issue8"
+          gh run download 45550445598 --repo "$GITHUB_REPOSITORY" --name issue8-repair-trial --dir "$RUNNER_TEMP/issue8/previous"
+          gh run download 45553924343 --repo "$GITHUB_REPOSITORY" --name issue8-repair-trial --dir "$RUNNER_TEMP/issue8"
           gh api "repos/$GITHUB_REPOSITORY/issues/comments/7091487940" > "$RUNNER_TEMP/issue8/plan-comment.json"
       - name: Verify reproduction and offline safeguards
         run: |
