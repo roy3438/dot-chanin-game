@@ -139,7 +139,7 @@ def run_case(browser, origin, entry, scenario, viewport, touch):
 
 
 def baseline_suite(browser, root, port):
-    path = Path("/dot_qa.py")
+    path = Path("/qa/scripts/browser_qa.py")
     if not path.exists():
         path = Path(__file__).resolve().parents[1] / "browser_qa.py"
     spec = importlib.util.spec_from_file_location("studio_dot_chain_baseline", path)

@@ -500,7 +500,7 @@ def run_qa(assets, plan):
                  "-v", f"{game}:/game:ro", "-v", f"{definition}:/plan.json:ro",
                  "-v", f"{driver}:/qa-driver:ro",
                  "-v", f"{ROOT / 'scripts/studio/browser.py'}:/browser.py:ro",
-                 "-v", f"{ROOT / 'scripts/browser_qa.py'}:/dot_qa.py:ro", QA_IMAGE,
+                 "-v", f"{ROOT / 'scripts/browser_qa.py'}:/qa/scripts/browser_qa.py:ro", QA_IMAGE,
                  "python", "-I", "-B", "/browser.py", "/game", "/plan.json"],
                 capture_output=True, timeout=125,
             )
