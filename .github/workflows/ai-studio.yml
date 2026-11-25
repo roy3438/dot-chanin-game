@@ -30,8 +30,28 @@ jobs:
         with:
           ref: ${{ github.sha }}
           persist-credentials: false
+      - name: Identify approved retry
+        id: resume
+        shell: python
+        run: |
+          import json, os, re
+          with open(os.environ["GITHUB_EVENT_PATH"]) as event:
+              body = json.load(event)["comment"]["body"].strip()
+          match = re.fullmatch(r"/studio retry ([1-9][0-9]{0,19}) groq-step-2", body)
+          if match:
+              with open(os.environ["GITHUB_OUTPUT"], "a") as output:
+                  print("approval=" + match[1], file=output)
+      - name: Restore approved candidate
+        if: steps.resume.outputs.approval != ''
+        uses: actions/cache/restore@5a3ec84eff668545956fd18022155c47e93e2684
+        with:
+          path: ${{ runner.temp }}/studio-checkpoint
+          key: studio-v1-${{ github.sha }}-${{ github.event.issue.number }}-${{ steps.resume.outputs.approval }}-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: |
+            studio-v1-${{ github.sha }}-${{ github.event.issue.number }}-${{ steps.resume.outputs.approval }}-
       - name: Run studio
         env:
+          STUDIO_CHECKPOINT: ${{ runner.temp }}/studio-checkpoint
           GH_TOKEN: ${{ github.token }}
           GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
@@ -39,3 +59,9 @@ jobs:
           COLLAB_MODEL: ${{ vars.COLLAB_MODEL }}
           STUDIO_OWNER: ${{ vars.STUDIO_OWNER || github.repository_owner }}
         run: python3 -I -B scripts/studio/engine.py
+      - name: Preserve candidate for explicit retry
+        if: failure() && steps.resume.outputs.approval != ''
+        uses: actions/cache/save@5a3ec84eff668545956fd18022155c47e93e2684
+        with:
+          path: ${{ runner.temp }}/studio-checkpoint
+          key: studio-v1-${{ github.sha }}-${{ github.event.issue.number }}-${{ steps.resume.outputs.approval }}-${{ github.run_id }}-${{ github.run_attempt }}
