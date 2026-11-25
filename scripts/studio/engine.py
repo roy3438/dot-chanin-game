@@ -530,7 +530,7 @@ def reference_sections(baseline, evidence):
     return [{"path": path, "source": body} for _, _, path, body in ranked[:2]]
 
 
-def repair_with_groq(ai, plan, scope, assets, review, log, baseline=None):
+def repair_with_groq(ai, plan, scope, assets, review, log, baseline=None, previous_evidence=None):
     evidence = failure_evidence(log)
     diagnostics = [line.strip() for line in log.splitlines()
                    if line.startswith(("FAIL ", "AssertionError:", "Step "))]
@@ -538,6 +538,14 @@ def repair_with_groq(ai, plan, scope, assets, review, log, baseline=None):
                "browser_result": ("\n".join(diagnostics) or log)[-1800:]}
     if evidence:
         context["reproduction"] = evidence
+        if (previous_evidence and all(previous_evidence.get(key) == evidence.get(key)
+                for key in ("case", "device", "seed", "expected", "action"))):
+            context["previous_observation"] = previous_evidence["observed"]
+            context["remaining_mismatches"] = {
+                key: {"expected": value, "previous": previous_evidence["observed"].get(key),
+                      "current": evidence["observed"].get(key)}
+                for key, value in evidence["expected"].items() if evidence["observed"].get(key) != value}
+
         if evidence.get("comparisons"):
             context["qa_assignment"] = {"failed_action": evidence["action"], "expected": evidence["expected"],
                 "instruction": "Compare the observed states differing by one approved field. Trace loading, control flow, and every write to the failed output. Correct all evidenced causes in the chosen file."}
@@ -559,6 +567,16 @@ def repair_with_groq(ai, plan, scope, assets, review, log, baseline=None):
         source = {path: updated[path].decode("utf-8")} if path in updated else {}
         file_context = context | {"source": source, "entry": plan["entry"], "target_file": path}
         if evidence and path in source and scope[path] == "write":
+            # Surface writes to the failing output, including writes in called helpers.
+            mismatches = [key for key, value in evidence["expected"].items()
+                          if evidence["observed"].get(key) != value]
+            writes = []
+            for number, line in enumerate(source[path].splitlines(), 1):
+                if any(re.search(r"\b" + re.escape(key) + r"\s*(?:[+*/-]=|\+\+|--|=(?!=))", line)
+                       for key in mismatches):
+                    writes.append({"line": number, "code": line.strip()[:160]})
+            file_context["candidate_write_sites"] = writes[:16]
+
             result = ai.ask(
                 '근거와 원본 동작을 비교해 원인을 고치세요. 후보 파일에서 각각 한 번만 나타나는 부분을 '
                 '정확히 교체하세요. JSON {"edits":[{"before":"현재 원문","after":"교체할 원문"}]}. '
@@ -681,13 +699,14 @@ def deploy_candidate(ai, plan, task, baseline, qa, progress, groq_step_two=False
         evidence = failure_evidence(log)
         if evidence is not None and evidence == previous_failure:
             raise Stop("수정 후 같은 입력과 기대값에서 같은 결과가 반복됐습니다. 추가 요청을 중단합니다.")
+        prior_evidence = previous_failure
         previous_failure = evidence
         if attempt == 2:
             raise Stop("QA 자동 수정 2회 후 중단. 최근 결과\n" +
                        safe_block(canonical({"검토": review, "브라우저": log})[:3800]))
         progress(f"QA 수정 {attempt + 1}/2")
         if groq_developer:
-            assets = repair_with_groq(groq_developer, plan, scope, assets, review, log, baseline)
+            assets = repair_with_groq(groq_developer, plan, scope, assets, review, log, baseline, prior_evidence)
         else:
             assets = change_files(ai, "개발 담당. 승인된 시험을 통과하도록 원인을 수정하세요.",
                                   {"scope": scope, "plan": plan, "source": source_context(assets),
