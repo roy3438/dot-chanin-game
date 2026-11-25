@@ -538,6 +538,9 @@ def repair_with_groq(ai, plan, scope, assets, review, log, baseline=None):
                "browser_result": ("\n".join(diagnostics) or log)[-1800:]}
     if evidence:
         context["reproduction"] = evidence
+        if evidence.get("comparisons"):
+            context["qa_assignment"] = {"failed_action": evidence["action"], "expected": evidence["expected"],
+                "instruction": "Compare the observed states differing by one approved field. Trace loading, control flow, and every write to the failed output. Correct all evidenced causes in the chosen file."}
         context["original_reference"] = reference_sections(baseline or {}, evidence)
     paths = list(scope)
     if len(paths) > 1:
