@@ -1,0 +1,44 @@
+name: Issue 8 bounded repair trial
+on:
+  pull_request:
+    types: [opened]
+permissions:
+  contents: read
+  actions: read
+  issues: read
+jobs:
+  replay:
+    if: >-
+      github.run_attempt == 1 &&
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      github.head_ref == 'studio/repair-from-evidence' &&
+      github.event.pull_request.user.login == github.repository_owner
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+      - name: Read approved fixtures
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/issue8"
+          gh run download 45548610674 --repo "$GITHUB_REPOSITORY" --name studio-11dd8fc11bd74e6e28b92ae83bc1e879f3fcc86b-8-7091498356 --dir "$RUNNER_TEMP/issue8"
+          gh api "repos/$GITHUB_REPOSITORY/issues/comments/7091487940" > "$RUNNER_TEMP/issue8/plan-comment.json"
+      - name: Verify reproduction and offline safeguards
+        run: |
+          python3 scripts/studio/test_resume.py
+          python3 scripts/studio/issue8_replay.py offline
+      - name: Run one repair and verify the candidate
+        env:
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+        run: python3 scripts/studio/issue8_replay.py live
+      - name: Preserve trial result
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: issue8-repair-trial
+          path: ${{ runner.temp }}/issue8/result/
+          if-no-files-found: ignore
+          retention-days: 7
