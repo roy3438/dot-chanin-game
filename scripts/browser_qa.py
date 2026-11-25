@@ -45,6 +45,7 @@ def read_state(page):
     )
 
 def gesture(page):
+    previous_moves = read_state(page)["moves"]
     first = page.locator(".cell").nth(0).bounding_box()
     second = page.locator(".cell").nth(1).bounding_box()
     assert first and second, "Missing board cells"
@@ -55,8 +56,8 @@ def gesture(page):
     page.mouse.move(*b, steps=5)
     page.mouse.up()
     page.wait_for_function(
-        "key => JSON.parse(localStorage.getItem(key)).moves < 20",
-        arg=KEY, timeout=5000
+        "([key, previous]) => JSON.parse(localStorage.getItem(key)).moves === previous - 1",
+        arg=[KEY, previous_moves], timeout=5000
     )
 
 def run_case(browser, label, viewport, touch):

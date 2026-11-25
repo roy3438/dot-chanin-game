@@ -1,6 +1,7 @@
 """Plan, approve, build, test and publish static browser games."""
 import base64
 import json
+import math
 import os
 from pathlib import Path
 import re
@@ -51,6 +52,8 @@ class GroqRateLimit(Stop):
         self.retry_after = headers.get("Retry-After", "").strip()
         names = ("x-ratelimit-remaining-requests", "x-ratelimit-remaining-tokens",
                  "x-ratelimit-reset-requests", "x-ratelimit-reset-tokens")
+        window = re.fullmatch(r"([0-9]+(?:\.[0-9]+)?)s", headers.get("x-ratelimit-reset-tokens", ""))
+        self.token_wait = math.ceil(float(window[1])) if window else 0
         self.details = []
         for name in names:
             value = headers.get(name, "").strip()
@@ -65,6 +68,7 @@ def request_groq(url, headers, payload):
         except GroqRateLimit as error:
             retry_after = error.retry_after
             delay = int(retry_after) if re.fullmatch(r"[0-9]{1,9}", retry_after) else 60
+            delay = max(delay, error.token_wait)
             details = ", ".join(error.details)
             print(f"{error}. 대기 안내 {delay}초. {details}", flush=True)
             if attempt == 2 or delay > 120:
@@ -78,12 +82,20 @@ def canonical(value):
     return json.dumps(value, sort_keys=True, ensure_ascii=False, separators=(",", ":"))
 
 
+# Count physical generation attempts, including HTTP retries and provider fallback.
+GENERATION_LIMITS = {"api.groq.com": 12, "generativelanguage.googleapis.com": 13}
+generation_counts = {host: 0 for host in GENERATION_LIMITS}
+
+
 def request(url, method, headers, data=None, timeout=75):
     req = urllib.request.Request(
         url, data=canonical(data).encode() if data is not None else None,
         method=method, headers={"User-Agent": "ai-game-studio", "Content-Type": "application/json", **headers},
     )
     host = urllib.parse.urlsplit(url).hostname
+    if host in GENERATION_LIMITS and method == "POST":
+        require(generation_counts[host] < GENERATION_LIMITS[host], f"{host} 실행당 생성 요청 상한 도달")
+        generation_counts[host] += 1
     try:
         with urllib.request.urlopen(req, timeout=timeout) as response:
             return json.load(response)
@@ -500,8 +512,7 @@ def repair_with_groq(ai, plan, scope, assets, review, log):
     for path in paths:
         source = {path: updated[path].decode("utf-8")} if path in updated else {}
         file_context = context | {"source": source, "entry": plan["entry"],
-                                  "related_files": paths,
-                                  "step": next(step for step in plan["steps"] if path in step["files"])}
+                                  "target_file": path}
         updated = change_files(
             ai, "개발 담당. 승인된 시험 실패를 고치세요. 다른 파일과의 기존 연결 규약을 유지하세요.",
             file_context, {path: scope[path]}, updated, True,
@@ -509,20 +520,70 @@ def repair_with_groq(ai, plan, scope, assets, review, log):
     return updated
 
 
-def deploy_candidate(ai, plan, task, baseline, qa, progress, groq_step_two=False):
+class Checkpoint:
+    def __init__(self, folder, identity):
+        self.file = Path(folder) / "candidate.json"
+        self.file.parent.mkdir(parents=True, exist_ok=True)
+        self.identity = identity
+        self.state = {}
+        if self.file.is_file():
+            saved = json.loads(self.file.read_text())
+            require(saved["identity"] == identity, "저장 후보의 승인 또는 기준 코드가 다릅니다.")
+            self.state = saved["state"]
+
+    def save(self, assets, scope, stage, repairs, review, log=""):
+        self.state = {"files": {name: assets[name].decode() if name in assets else None for name in scope},
+                      "stage": stage, "repairs": repairs, "review": review, "log": log}
+        temp = self.file.with_suffix(".tmp")
+        temp.write_text(canonical({"identity": self.identity, "state": self.state}), encoding="utf-8")
+        temp.replace(self.file)
+
+
+def level_two_negative(plan):
+    for scenario in plan["tests"]:
+        raw = scenario.get("seed", {}).get("dot-chain-v1")
+        state = json.loads(raw) if isinstance(raw, str) else raw
+        if state and state.get("level") == 2:
+            state = dict(state, score=1980, best=1980, moves=5)
+            return {"name": "레벨2 짧은 연결로 목표 점수를 넘어도 계속 진행",
+                    "seed": {"dot-chain-v1": state},
+                    "steps": [{"do": "drag", "selector": "[data-pos='0']", "target": "[data-pos='1']"},
+                              {"do": "playing-after-short-chain"}]}
+    raise Stop("레벨 2 시험 상태가 필요합니다.")
+
+
+def deploy_candidate(ai, plan, task, baseline, qa, progress, groq_step_two=False, checkpoint=None):
     if groq_step_two:
         require(len(plan['steps']) >= 2 and os.environ.get('GROQ_API_KEY'),
                 'Groq 시험에는 개발 2단계와 GROQ_API_KEY 시크릿이 필요합니다.')
     groq_developer = Groq() if groq_step_two else None
     assets = baseline
     scope = {}
+    saved = checkpoint.state if checkpoint else {}
+    stage = saved.get("stage", 0)
+    repairs = saved.get("repairs", 0)
+    review = saved.get("review")
+    require(0 <= stage <= len(plan["steps"]) and 0 <= repairs <= 2, "저장 후보 단계 오류")
+    for step in plan["steps"][:stage]:
+        scope.update(step["files"])
+    if saved:
+        assets = apply_file_response({"files": saved["files"]}, scope, assets, True)
+        progress(f"저장 후보 복구: 개발 {stage}단계, 완료된 수정 {repairs}회")
+
     for number, step in enumerate(plan["steps"], 1):
+        if number <= stage:
+            continue
         progress(f"개발 {number}/{len(plan['steps'])}")
         developer = groq_developer if groq_step_two and number == 2 else ai
-        assets = change_files(developer, "개발 담당. 현재 단계의 파일 전체를 구현하세요.",
+        contract = (" 기존 DOT CHAIN의 화면 선택자, 저장 스키마, 점수·이동·승패 규약을 보존하고 "
+                    "레벨2는 2000점 이상이어도 긴 연결 전에는 계속 진행하세요."
+                    if "[dot-chain-levels]" in task else "")
+        assets = change_files(developer, "개발 담당. 현재 단계의 파일 전체를 구현하세요." + contract,
                               {"task": task, "plan": plan, "stage": step, "source": source_context(assets)},
                               step["files"], assets, True)
         scope.update(step["files"])
+        if checkpoint:
+            checkpoint.save(assets, scope, number, repairs, None)
 
     qa_plan = plan | {"dot_chain_regression": (
         plan["mode"] != "replace-game" and
@@ -532,15 +593,24 @@ def deploy_candidate(ai, plan, task, baseline, qa, progress, groq_step_two=False
     if collaboration_model:
         ai.model = collaboration_model
         ai.checked = False
-    progress("QA 코드 검토")
-    review = ai.ask('QA 담당. 승인 범위, 규칙, 모바일 조작과 코드 오류를 검토. '
-                    'JSON {"issues":["반드시 고칠 문제"]}. 문제 없으면 빈 배열.',
-                    {"plan": plan, "task": task, "source": source_context(assets)}, 2400).get("issues")
-    require(isinstance(review, list) and len(review) <= 12 and all(string(item, 350) for item in review),
-            "QA 검토 결과 형식 오류")
-    for attempt in range(3):
+    if "[dot-chain-levels]" in task:
+        qa_plan["tests"] = [*plan["tests"], level_two_negative(plan)]
+    if review is None:
+        progress("QA 코드 검토")
+        review = ai.ask('QA 담당. 승인 범위, 규칙, 모바일 조작과 코드 오류를 검토. '
+                        'JSON {"issues":["반드시 고칠 문제"]}. 문제 없으면 빈 배열.',
+                        {"plan": plan, "task": task, "source": source_context(assets)}, 2400).get("issues")
+        require(isinstance(review, list) and len(review) <= 12 and all(string(item, 350) for item in review),
+                "QA 검토 결과 형식 오류")
+    for attempt in range(repairs, 3):
         progress(f"브라우저 QA {attempt + 1}/3")
+        if checkpoint and checkpoint.state.get("review") != review:
+            checkpoint.save(assets, scope, len(plan["steps"]), attempt, review)
         passed, log = qa(assets, qa_plan)
+        if checkpoint:
+            checkpoint.save(assets, scope, len(plan["steps"]), attempt, review, log)
+        if not passed or review:
+            progress("QA 결과 " + canonical({"review": review, "browser": log[-4000:]}))
         if passed and not review:
             return assets, scope, attempt
         if attempt == 2:
@@ -554,6 +624,8 @@ def deploy_candidate(ai, plan, task, baseline, qa, progress, groq_step_two=False
                                   {"scope": scope, "plan": plan, "source": source_context(assets),
                                    "review_findings": review, "browser_result": log},
                                   scope, assets, False)
+        if checkpoint:
+            checkpoint.save(assets, scope, len(plan["steps"]), attempt + 1, None if review else [])
         if review:
             result = ai.ask('QA 담당. 기존 발견 사항의 해결 여부를 검토. JSON {"issues":[]}.',
                             {"review_findings": review, "plan": plan, "source": source_context(assets)},
@@ -604,12 +676,15 @@ def run_qa(assets, plan):
             )
         except subprocess.TimeoutExpired:
             subprocess.run(["docker", "rm", "-f", container], capture_output=True, timeout=15)
-            return False, "브라우저 QA 시간 초과"
+            raise Stop("브라우저 QA 시간 초과. 후보를 보존하고 실행 환경을 점검하세요.") from None
         require(result.returncode != 125, "격리 QA 컨테이너 실행 실패")
         log = (result.stdout + result.stderr).decode(errors="replace")[-5000:]
         require(result.returncode in (0, 1), "QA 프로세스가 예기치 않게 종료됐습니다.")
         require("STUDIO_QA_INFRA" not in log, "QA 환경 초기화 실패. 브라우저 및 컨테이너 설정을 확인하세요.")
-        return result.returncode == 0 and "\nSTUDIO_QA_PASS\n" in log, log
+        if result.returncode == 0 and "\nSTUDIO_QA_PASS\n" in log:
+            return True, log
+        require("STUDIO_QA_CASE_FAILURE" in log, "분류되지 않은 QA 종료. 게임 수정을 중단합니다. " + log[-1200:])
+        return False, log
 
 
 def safe_block(value):
@@ -761,9 +836,12 @@ def main():
             plan_id = retry_approval(issue, approval_id, owner) if retry else approval[1]
             envelope = read_approval(issue, plan_id, base_branch, base, inventory, retry=bool(retry))
             claim(issue, plan_id, retry_comment_id=approval_id if retry else None)
+            checkpoint = None
+            if os.environ.get("STUDIO_CHECKPOINT") and retry and retry[2]:
+                checkpoint = Checkpoint(os.environ["STUDIO_CHECKPOINT"], [issue, approval_id, plan_id, base])
             updated, scope, repairs = deploy_candidate(
                 ai, envelope["plan"], envelope["task"], assets, run_qa, progress,
-                groq_step_two=bool(retry and retry[2]))
+                groq_step_two=bool(retry and retry[2]), checkpoint=checkpoint)
             pr = publish(issue, approval_id, base_branch, base, assets, updated, scope, repairs)
             comment(issue, f"브라우저 QA 통과. 자동 수정 {repairs}회. [검토용 초안 PR]({pr['html_url']}) "
                            f"· [실행 기록]({run})")
