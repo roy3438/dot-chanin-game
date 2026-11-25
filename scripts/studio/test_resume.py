@@ -1,0 +1,57 @@
+"""Offline regression checks for the approved development retry."""
+import json
+import tempfile
+import unittest
+from unittest.mock import Mock, patch
+
+import engine
+
+
+class RetryTests(unittest.TestCase):
+    def test_wait_for_tokens_before_retry(self):
+        error = engine.GroqRateLimit({"Retry-After": "5", "x-ratelimit-reset-tokens": "41.79s"})
+        with patch.object(engine, "request", side_effect=[error, {"ok": True}]), patch.object(engine.time, "sleep") as wait:
+            self.assertEqual(engine.request_groq("url", {}, {}), {"ok": True})
+            wait.assert_called_once_with(42)
+
+    def test_unauthorized_file_rejected(self):
+        with self.assertRaises(engine.Stop):
+            engine.apply_file_response({"files": {"a.js": "a", "b.js": "b"}}, {"a.js": "write"}, {}, True)
+
+    def test_budget_before_network(self):
+        host = "api.groq.com"
+        with patch.dict(engine.generation_counts, {host: engine.GENERATION_LIMITS[host]}), patch.object(engine.urllib.request, "urlopen") as network:
+            with self.assertRaises(engine.Stop):
+                engine.request("https://" + host, "POST", {}, {})
+            network.assert_not_called()
+
+    def test_resume_after_qa_environment_failure(self):
+        plan = {"steps": [{"files": {"index.html": "write"}}], "mode": "update-game", "tests": []}
+        base = {"index.html": b"old"}
+        original = Mock()
+        original.ask.side_effect = [{"files": {"index.html": "candidate"}}, {"issues": []}]
+        identity = [8, 123, "456", "base"]
+        with tempfile.TemporaryDirectory() as folder:
+            checkpoint = engine.Checkpoint(folder, identity)
+            with self.assertRaisesRegex(engine.Stop, "environment"):
+                engine.deploy_candidate(original, plan, "", base, Mock(side_effect=engine.Stop("environment")), print, checkpoint=checkpoint)
+            self.assertEqual(original.ask.call_count, 2)
+            with self.assertRaises(engine.Stop):
+                engine.Checkpoint(folder, identity[:-1] + ["other"])
+            resumed = Mock()
+            assets, _, repairs = engine.deploy_candidate(resumed, plan, "", base, lambda *_: (True, "pass"), print,
+                                                        checkpoint=engine.Checkpoint(folder, identity))
+            resumed.ask.assert_not_called()
+            self.assertEqual((assets["index.html"], repairs), (b"candidate", 0))
+
+    def test_level_two_short_chain_is_independent(self):
+        original = {"level": 2, "score": 1900, "moves": 5, "missionProgress": {"longChain": False}}
+        plan = {"tests": [{"seed": {"dot-chain-v1": json.dumps(original)}}]}
+        negative = engine.level_two_negative(plan)
+        self.assertEqual(negative["seed"]["dot-chain-v1"]["score"], 1980)
+        self.assertEqual(negative["steps"][0]["target"], "[data-pos='1']")
+        self.assertEqual(json.loads(plan["tests"][0]["seed"]["dot-chain-v1"]), original)
+
+
+if __name__ == "__main__":
+    unittest.main()
