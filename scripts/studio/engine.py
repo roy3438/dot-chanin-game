@@ -499,31 +499,81 @@ class Groq:
         return value
 
 
-def repair_with_groq(ai, plan, scope, assets, review, log):
+def failure_evidence(log):
+    for line in log.splitlines():
+        if line.startswith("STUDIO_EVIDENCE "):
+            evidence = json.loads(line.removeprefix("STUDIO_EVIDENCE "))
+            if isinstance(evidence, dict) and isinstance(evidence.get("expected"), dict):
+                return evidence
+    return None
+
+
+def reference_sections(baseline, evidence):
+    """Rank original function bodies by writes to the fields checked by QA."""
+    fields = [re.escape(key) for key in evidence["expected"] if re.fullmatch(r"\w+", key)]
+    if not fields:
+        return []
+    field = r"\b(?:" + "|".join(fields) + r")\b"
+    ranked = []
+    for path, source in source_context(baseline).items():
+        if not path.endswith((".js", ".mjs", ".html")):
+            continue
+        blocks = re.split(r"(?m)(?=^[ \t]*(?:async )?function [\w$]+\s*\()", source)
+        for block in blocks:
+            if len(blocks) > 1 and not re.match(r"(?:async )?function ", block.lstrip()):
+                continue
+            writes = re.findall(field + r"\s*(?:[+*/-]=|--|\+\+|=(?!=))", block)
+            hits = re.findall(field, block)
+            if hits:
+                ranked.append((len(set(writes)), len(set(hits)), path, block.strip()[:2200]))
+    ranked.sort(key=lambda item: item[:2], reverse=True)
+    return [{"path": path, "source": body} for _, _, path, body in ranked[:2]]
+
+
+def repair_with_groq(ai, plan, scope, assets, review, log, baseline=None):
+    evidence = failure_evidence(log)
     diagnostics = [line.strip() for line in log.splitlines()
-                   if "STUDIO_QA_CASE_FAILURE" in line or line.startswith(("FAIL ", "AssertionError:", "Step "))]
+                   if line.startswith(("FAIL ", "AssertionError:", "Step "))]
     context = {"summary": plan["summary"], "review_findings": review,
                "browser_result": ("\n".join(diagnostics) or log)[-1800:]}
+    if evidence:
+        context["reproduction"] = evidence
+        context["original_reference"] = reference_sections(baseline or {}, evidence)
     paths = list(scope)
     if len(paths) > 1:
         selection = ai.ask(
-            '실패를 고치는 데 필요한 최소 승인 파일을 선택하세요. JSON은 {"paths": ["파일 경로"]}입니다.',
+            ('구조화된 재현 사례의 직접 원인을 담당하는 파일 하나만 고르세요. ' if evidence else '') +
+            '재현 근거를 보고 원인을 고치는 데 필요한 최소 승인 파일을 선택하세요. JSON은 {"paths": ["파일 경로"]}입니다.',
             context | {"allowed_files": scope, "steps": plan["steps"]}, 700,
         ).get("paths")
         require(isinstance(selection, list) and selection and len(selection) <= len(scope) and
                 all(isinstance(path, str) and path in scope for path in selection) and
-                len(set(selection)) == len(selection),
+                len(set(selection)) == len(selection) and (not evidence or len(selection) == 1),
                 "Groq가 승인 범위에서 수정 파일을 선택하지 못했습니다.")
         paths = selection
     updated = assets
     for path in paths:
         source = {path: updated[path].decode("utf-8")} if path in updated else {}
-        file_context = context | {"source": source, "entry": plan["entry"],
-                                  "target_file": path}
-        updated = change_files(
-            ai, "개발 담당. 승인된 시험 실패를 고치세요. 다른 파일과의 기존 연결 규약을 유지하세요.",
-            file_context, {path: scope[path]}, updated, True,
-        )
+        file_context = context | {"source": source, "entry": plan["entry"], "target_file": path}
+        if evidence and path in source and scope[path] == "write":
+            result = ai.ask(
+                '근거와 원본 동작을 비교해 원인을 고치세요. 후보 파일에서 각각 한 번만 나타나는 부분을 '
+                '정확히 교체하세요. JSON {"edits":[{"before":"현재 원문","after":"교체할 원문"}]}. '
+                '필요 없는 파일이면 빈 배열을 반환하세요. 시험과 시험 데이터를 변경하지 마세요.',
+                file_context, 3500)
+            edits = result.get("edits")
+            require(isinstance(edits, list) and len(edits) <= 24, "수정 목록 형식 오류")
+            body = source[path]
+            for edit in edits:
+                require(isinstance(edit, dict) and isinstance(edit.get("before"), str) and
+                        edit["before"] and isinstance(edit.get("after"), str) and body.count(edit["before"]) == 1,
+                        "수정할 원문 위치가 유일하지 않습니다.")
+                body = body.replace(edit["before"], edit["after"], 1)
+            updated = apply_file_response({"files": {path: body}}, {path: scope[path]}, updated, True)
+        else:
+            updated = change_files(ai, "승인된 시험 실패를 고치고 다른 파일과의 연결 규약을 유지하세요.",
+                                   file_context, {path: scope[path]}, updated, True)
+    require(updated != assets, "자동 수정 결과가 후보와 동일합니다. 추가 요청을 중단합니다.")
     return updated
 
 
@@ -585,8 +635,12 @@ def deploy_candidate(ai, plan, task, baseline, qa, progress, groq_step_two=False
         contract = (" 기존 DOT CHAIN의 화면 선택자, 저장 스키마, 점수·이동·승패 규약을 보존하고 "
                     "레벨2는 2000점 이상이어도 긴 연결 전에는 계속 진행하세요."
                     if "[dot-chain-levels]" in task else "")
+        inputs = {"task": task, "plan": plan, "stage": step, "source": source_context(assets)}
+        if number > 1 and plan["mode"] != "replace-game":
+            inputs["original_before_changes"] = source_context(
+                {name: data for name, data in baseline.items() if data != assets.get(name)})
         assets = change_files(developer, "개발 담당. 현재 단계의 파일 전체를 구현하세요." + contract,
-                              {"task": task, "plan": plan, "stage": step, "source": source_context(assets)},
+                              inputs,
                               step["files"], assets, True)
         scope.update(step["files"])
         if checkpoint:
@@ -609,6 +663,7 @@ def deploy_candidate(ai, plan, task, baseline, qa, progress, groq_step_two=False
                         {"plan": plan, "task": task, "source": source_context(assets)}, 2400).get("issues")
         require(isinstance(review, list) and len(review) <= 12 and all(string(item, 350) for item in review),
                 "QA 검토 결과 형식 오류")
+    previous_failure = None
     for attempt in range(repairs, 3):
         progress(f"브라우저 QA {attempt + 1}/3")
         if checkpoint and checkpoint.state.get("review") != review:
@@ -620,12 +675,16 @@ def deploy_candidate(ai, plan, task, baseline, qa, progress, groq_step_two=False
             progress("QA 결과 " + canonical({"review": review, "browser": log[-4000:]}))
         if passed and not review:
             return assets, scope, attempt
+        evidence = failure_evidence(log)
+        if evidence is not None and evidence == previous_failure:
+            raise Stop("수정 후 같은 입력과 기대값에서 같은 결과가 반복됐습니다. 추가 요청을 중단합니다.")
+        previous_failure = evidence
         if attempt == 2:
             raise Stop("QA 자동 수정 2회 후 중단. 최근 결과\n" +
                        safe_block(canonical({"검토": review, "브라우저": log})[:3800]))
         progress(f"QA 수정 {attempt + 1}/2")
         if groq_developer:
-            assets = repair_with_groq(groq_developer, plan, scope, assets, review, log)
+            assets = repair_with_groq(groq_developer, plan, scope, assets, review, log, baseline)
         else:
             assets = change_files(ai, "개발 담당. 승인된 시험을 통과하도록 원인을 수정하세요.",
                                   {"scope": scope, "plan": plan, "source": source_context(assets),
