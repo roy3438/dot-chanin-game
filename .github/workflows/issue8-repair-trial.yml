@@ -1,7 +1,7 @@
 name: Issue 8 bounded repair trial
 on:
   pull_request:
-    types: [opened]
+    types: [synchronize]
 permissions:
   contents: read
   actions: read
@@ -9,7 +9,7 @@ permissions:
 jobs:
   replay:
     if: >-
-      github.run_attempt == 1 &&
+      github.run_attempt == 1 && github.event.before == '780c77705bd88b8483068d05eca3fb3ff0b9003e' &&
       github.event.pull_request.head.repo.full_name == github.repository &&
       github.head_ref == 'studio/repair-from-evidence' &&
       github.event.pull_request.user.login == github.repository_owner
@@ -24,7 +24,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           mkdir -p "$RUNNER_TEMP/issue8"
-          gh run download 45548610674 --repo "$GITHUB_REPOSITORY" --name studio-11dd8fc11bd74e6e28b92ae83bc1e879f3fcc86b-8-7091498356 --dir "$RUNNER_TEMP/issue8"
+          gh run download 45550445598 --repo "$GITHUB_REPOSITORY" --name issue8-repair-trial --dir "$RUNNER_TEMP/issue8"
           gh api "repos/$GITHUB_REPOSITORY/issues/comments/7091487940" > "$RUNNER_TEMP/issue8/plan-comment.json"
       - name: Verify reproduction and offline safeguards
         run: |
