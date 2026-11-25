@@ -449,6 +449,33 @@ class Groq:
         return value
 
 
+def repair_with_groq(ai, plan, scope, assets, review, log):
+    context = {"summary": plan["summary"], "review_findings": review,
+               "browser_result": log[-5000:]}
+    paths = list(scope)
+    if len(paths) > 1:
+        selection = ai.ask(
+            '실패를 고치는 데 필요한 최소 승인 파일을 선택하세요. JSON은 {"paths": ["파일 경로"]}입니다.',
+            context | {"allowed_files": scope, "steps": plan["steps"]}, 700,
+        ).get("paths")
+        require(isinstance(selection, list) and selection and len(selection) <= len(scope) and
+                all(isinstance(path, str) and path in scope for path in selection) and
+                len(set(selection)) == len(selection),
+                "Groq가 승인 범위에서 수정 파일을 선택하지 못했습니다.")
+        paths = selection
+    updated = assets
+    for path in paths:
+        source = {path: updated[path].decode("utf-8")} if path in updated else {}
+        file_context = context | {"source": source, "entry": plan["entry"],
+                                  "related_files": paths,
+                                  "step": next(step for step in plan["steps"] if path in step["files"])}
+        updated = change_files(
+            ai, "개발 담당. 승인된 시험 실패를 고치세요. 다른 파일과의 기존 연결 규약을 유지하세요.",
+            file_context, {path: scope[path]}, updated, True,
+        )
+    return updated
+
+
 def deploy_candidate(ai, plan, task, baseline, qa, progress, groq_step_two=False):
     if groq_step_two:
         require(len(plan['steps']) >= 2 and os.environ.get('GROQ_API_KEY'),
@@ -487,10 +514,13 @@ def deploy_candidate(ai, plan, task, baseline, qa, progress, groq_step_two=False
             raise Stop("QA 자동 수정 2회 후 중단. 최근 결과\n" +
                        safe_block(canonical({"검토": review, "브라우저": log})[:3800]))
         progress(f"QA 수정 {attempt + 1}/2")
-        assets = change_files(groq_developer or ai, "개발 담당. 승인된 시험을 통과하도록 원인을 수정하세요.",
-                              {"scope": scope, "plan": plan, "source": source_context(assets),
-                               "review_findings": review, "browser_result": log},
-                              scope, assets, False)
+        if groq_developer:
+            assets = repair_with_groq(groq_developer, plan, scope, assets, review, log)
+        else:
+            assets = change_files(ai, "개발 담당. 승인된 시험을 통과하도록 원인을 수정하세요.",
+                                  {"scope": scope, "plan": plan, "source": source_context(assets),
+                                   "review_findings": review, "browser_result": log},
+                                  scope, assets, False)
         if review:
             result = ai.ask('QA 담당. 기존 발견 사항의 해결 여부를 검토. JSON {"issues":[]}.',
                             {"review_findings": review, "plan": plan, "source": source_context(assets)},
