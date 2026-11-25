@@ -1,0 +1,55 @@
+name: Studio checkpoint round trip
+on:
+  pull_request:
+    paths:
+      - 'scripts/studio/**'
+      - '.github/workflows/ai-studio.yml'
+      - '.github/workflows/studio-checkpoint-test.yml'
+permissions:
+  contents: read
+  actions: read
+env:
+  CHECKPOINT_NAME: test-studio-${{ github.run_id }}-${{ github.run_attempt }}
+jobs:
+  save:
+    runs-on: ubuntu-24.04
+    outputs:
+      digest: ${{ steps.fixture.outputs.digest }}
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+      - run: python3 scripts/studio/test_resume.py
+      - name: Save example candidate
+        id: fixture
+        env:
+          STUDIO_CHECKPOINT: ${{ runner.temp }}/checkpoint
+        run: |
+          mkdir -p "$STUDIO_CHECKPOINT"
+          python3 - <<'PY'
+          import os, sys
+          sys.path.insert(0, 'scripts/studio')
+          from engine import Checkpoint
+          Checkpoint(os.environ['STUDIO_CHECKPOINT'], [8, 1, '2', 'test']).save(
+              {'game.js': 'const 점수 = 42;'.encode()}, {'game.js': 'write'}, 1, 0, [], 'desktop fixture')
+          PY
+          python3 -I scripts/studio/checkpoint_artifact.py seal
+          echo "digest=$(cat "$STUDIO_CHECKPOINT/digest.txt")" >> "$GITHUB_OUTPUT"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: ${{ env.CHECKPOINT_NAME }}
+          path: ${{ runner.temp }}/checkpoint/
+          if-no-files-found: error
+          retention-days: 1
+  restore:
+    needs: save
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+      - name: Restore and compare with producer
+        env:
+          STUDIO_CHECKPOINT: ${{ runner.temp }}/restored
+          GH_TOKEN: ${{ github.token }}
+          EXPECTED: ${{ needs.save.outputs.digest }}
+        run: |
+          python3 -I scripts/studio/checkpoint_artifact.py restore --required
+          cd "$STUDIO_CHECKPOINT"
+          echo "$EXPECTED  candidate.json" | sha256sum --check --strict
