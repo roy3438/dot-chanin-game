@@ -5,7 +5,7 @@ import json
 import pathlib
 import threading
 import traceback
-from playwright.sync_api import sync_playwright
+from playwright.sync_api import TimeoutError as BrowserTimeout, sync_playwright
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 EVIDENCE = ROOT / "qa-evidence"
@@ -60,7 +60,48 @@ def gesture(page):
         arg=[KEY, previous_moves], timeout=5000
     )
 
-def run_case(browser, label, viewport, touch, probe_only=False):
+def comparison_inputs(seed, scenarios, storage_key):
+    """Use the nearest approved saved state and vary one previously absent field."""
+    candidates = []
+    for test in scenarios:
+        value = test.get("seed", {}).get(storage_key)
+        if isinstance(value, str):
+            try:
+                value = json.loads(value)
+            except ValueError:
+                continue
+        if not isinstance(value, dict) or not seed.keys() <= value.keys():
+            continue
+        additions = {key: item for key, item in value.items() if key not in seed}
+        if additions:
+            distance = sum(seed[key] != value[key] for key in seed)
+            candidates.append((distance, additions, test["name"]))
+    if not candidates:
+        return []
+    _, additions, source = min(candidates, key=lambda item: item[0])
+    return [(key, value, source) for key, value in sorted(additions.items())[:6]]
+
+
+def compare_inputs(browser, viewport, touch, seed, expected, scenarios):
+    results = []
+    for key, value, source in comparison_inputs(seed, scenarios, KEY):
+        context = browser.new_context(viewport=viewport, has_touch=touch, is_mobile=touch)
+        try:
+            page = context.new_page()
+            page.set_default_timeout(4000)
+            put_state(page, {**seed, key: value})
+            gesture(page)
+            state = read_state(page)
+            results.append({"added": {key: value}, "approved_case": source,
+                            "observed": {field: state.get(field) for field in expected}})
+        except (AssertionError, BrowserTimeout) as error:
+            results.append({"added": {key: value}, "approved_case": source, "error": str(error)[:180]})
+        finally:
+            context.close()
+    return results
+
+
+def run_case(browser, label, viewport, touch, probe_only=False, scenarios=(), verify_fields=()):
     context = browser.new_context(
         viewport=viewport, has_touch=touch, is_mobile=touch,
         device_scale_factor=1,
@@ -86,12 +127,18 @@ def run_case(browser, label, viewport, touch, probe_only=False):
         state = read_state(page)
         observed = {key: state.get(key) for key in ("score", "moves", "phase", "level")}
         expected = {"score": 40, "moves": 19}
-        if any(observed[key] != value for key, value in expected.items()):
+        failed = any(observed[key] != value for key, value in expected.items())
+        if failed or verify_fields:
+            comparisons = compare_inputs(browser, viewport, touch, seed, expected, scenarios)
             evidence = {"case": "two_adjacent_dots", "device": label, "seed": seed,
                         "action": "drag cell 0 to adjacent cell 1", "expected": expected,
-                        "observed": observed}
-            print("STUDIO_EVIDENCE " + json.dumps(evidence, separators=(",", ":")), flush=True)
-            raise AssertionError(f"Expected {expected}, observed {observed}")
+                        "observed": observed, "comparisons": comparisons}
+            print("STUDIO_EVIDENCE " + json.dumps(evidence, ensure_ascii=False, separators=(",", ":")), flush=True)
+            if failed:
+                raise AssertionError(f"Expected {expected}, observed {observed}")
+            for field in verify_fields:
+                assert any(field in row["added"] and row.get("observed") == expected for row in comparisons), (
+                    f"Comparative regression failed for {field}")
         if probe_only:
             print(f"PASS {label}: two adjacent dots, moves={state['moves']} score={state['score']}", flush=True)
             return
