@@ -11,7 +11,7 @@ import engine
 
 folder = Path(os.environ["RUNNER_TEMP"]) / "issue8"
 raw = (folder / "candidate.json").read_bytes()
-assert hashlib.sha256(raw).hexdigest() == "50290577c818e2466c8aa198d55290ac3c52371a3203b1956969b990113cd0ba"
+assert hashlib.sha256(raw).hexdigest() == "35bf52383639ff03ac3153936a7e5cd198821735fef845fd68eb25d1abcccde2"
 candidate = json.loads(raw)
 assert candidate["identity"] == [8, 7091498356, "7091487940", "11dd8fc11bd74e6e28b92ae83bc1e879f3fcc86b"]
 plan_comment = json.loads((folder / "plan-comment.json").read_text())
@@ -22,7 +22,7 @@ plan = envelope["plan"]
 engine.validate_task_plan(plan, inventory, envelope["task"])
 scope = {key: op for step in plan["steps"] for key, op in step["files"].items()}
 assets = engine.apply_file_response({"files": candidate["state"]["files"]}, scope, baseline, True)
-probe = dict(plan, dot_chain_regression=True, probe_only=True, tests=[])
+probe = dict(plan, dot_chain_regression=True, probe_only=True)
 log_path = folder / "reproduction.txt"
 if sys.argv[1] == "offline":
     passed, log = engine.run_qa(assets, probe)
@@ -39,7 +39,12 @@ if sys.argv[1] == "offline":
     else:
         raise AssertionError("Unchanged repair accepted")
     payload = mock.ask.call_args.args[1]
-    assert payload["reproduction"] == evidence
+    assert payload["reproduction"] == evidence and payload["qa_assignment"]
+    print("Automatic QA comparisons:", engine.canonical(evidence["comparisons"]), flush=True)
+    assert any(row["added"] == {"level": 1} and row["observed"] == {"moves": 19, "score": 80}
+               for row in evidence["comparisons"])
+    assert any("level" not in row["added"] and row.get("observed", {}).get("score") == 0 for row in evidence["comparisons"])
+
     assert any("10 * chosen.length * chosen.length" in item["source"] for item in payload["original_reference"])
     assert mock.ask.call_count == 2
     log_path.write_text(log)
@@ -53,7 +58,10 @@ elif sys.argv[1] == "live":
     output = folder / "result"
     output.mkdir()
     engine.Checkpoint(output, candidate["identity"]).save(fixed, scope, len(plan["steps"]), 2, [])
-    passed, log = engine.run_qa(fixed, probe)
+    before = engine.failure_evidence(log_path.read_text())
+    fields = [next(iter(row["added"])) for row in before["comparisons"]
+              if "observed" in row and any(row["observed"][key] != before["observed"][key] for key in before["expected"])]
+    passed, log = engine.run_qa(fixed, dict(probe, verify_fields=fields))
     print("Focused QA", passed, log[-4000:], flush=True)
     if not passed:
         raise SystemExit("Focused QA failed; no further model calls")
