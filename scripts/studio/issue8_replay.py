@@ -25,6 +25,16 @@ assets = engine.apply_file_response({"files": candidate["state"]["files"]}, scop
 full = dict(plan, dot_chain_regression=True, tests=[*plan["tests"], engine.level_two_negative(plan)])
 log_path = folder / "reproduction.txt"
 if sys.argv[1] == "offline":
+    duplicate = "first\nsame\nsame\nlast\n"
+    edit = {"start": 3, "end": 3, "anchor": "same", "replacement": "changed"}
+    assert engine.apply_line_edits(duplicate, [edit]) == "first\nsame\nchanged\nlast\n"
+    for invalid in ([dict(edit, anchor="wrong")], [edit, edit], [dict(edit, end=9)]):
+        try:
+            engine.apply_line_edits(duplicate, invalid)
+        except engine.Stop:
+            pass
+        else:
+            raise AssertionError("Invalid source edit accepted")
     passed, log = engine.run_qa(assets, dict(plan, dot_chain_regression=True, tests=[]))
     evidence = engine.failure_evidence(log)
     assert not passed and evidence, log
