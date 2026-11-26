@@ -9,10 +9,15 @@ permissions:
 jobs:
   replay:
     if: >-
-      github.run_attempt == 1 && github.event.before == 'fc765ce237a8c8c35213337ac03df83dd1d65f22' &&
+      github.run_attempt == 1 && github.event.before == '9115b8c8343e7f848bff693c9ea2fc4975918369' &&
       github.event.pull_request.head.repo.full_name == github.repository &&
       github.head_ref == 'studio/repair-from-evidence' &&
       github.event.pull_request.user.login == github.repository_owner
+    permissions:
+      contents: write
+      pull-requests: write
+      issues: read
+      actions: read
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
@@ -34,30 +39,32 @@ jobs:
       - name: Verify reproduction and offline safeguards
         run: |
           python3 scripts/studio/test_resume.py
-      - name: Verify proposed game at immutable revision
+      - name: Generate independent repair and verify all cases
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          GEMINI_MODEL: ${{ vars.GEMINI_MODEL }}
+        run: python3 scripts/studio/issue8_replay.py repair
+      - name: Archive generated files and evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: independent-repair
+          path: ${{ runner.temp }}/issue8/result/
+          if-no-files-found: ignore
+          retention-days: 7
+      - name: Open draft for the verified candidate
         env:
           GH_TOKEN: ${{ github.token }}
-          GAME_SHA: c375a2ada1475d00df11d75155f3407f1521aff0
         run: |
-          mkdir -p "$RUNNER_TEMP/issue8/result"
-          for name in index.html script.js style.css; do
-            gh api -H 'Accept: application/vnd.github.raw+json' "repos/$GITHUB_REPOSITORY/contents/$name?ref=$GAME_SHA" > "$RUNNER_TEMP/issue8/result/$name"
-          done
-          PYTHONPATH=scripts/studio python3 - <<'PY'
-          from pathlib import Path
-          import os, base64, json, engine
-          folder = Path(os.environ["RUNNER_TEMP"]) / "issue8"
-          comment = json.loads((folder / "plan-comment.json").read_text())
-          assert comment["id"] == 7091487940 and comment["user"]["login"] == engine.BOT
-          envelope = json.loads(base64.b64decode(comment["body"].split("\n    studio-data ")[-1], validate=True))
-          plan = envelope["plan"]
-          inventory, assets = engine.snapshot()
-          engine.validate_task_plan(plan, inventory, envelope["task"])
-          scope = {name for step in plan["steps"] for name in step["files"]}
-          assert scope == {"index.html", "style.css", "script.js"}
-          assets.update({name:(folder / "result" / name).read_bytes() for name in scope})
-          full = dict(plan, dot_chain_regression=True, tests=[*plan["tests"], engine.level_two_negative(plan)])
-          passed, log = engine.run_qa(assets, full)
-          print(log, flush=True)
-          assert passed
-          PY
+          set -eu
+          base=11dd8fc11bd74e6e28b92ae83bc1e879f3fcc86b
+          test "$(gh api "repos/$GITHUB_REPOSITORY/commits/main" --jq .sha)" = "$base"
+          gh auth setup-git
+          git fetch --depth=1 origin "$base"
+          branch="studio/independent-8-$GITHUB_RUN_ID"
+          git switch -c "$branch" FETCH_HEAD
+          cp "$RUNNER_TEMP/issue8/result/"{index.html,script.js,style.css} .
+          git add -- index.html script.js style.css
+          git -c user.name=github-actions -c user.email=41898282+github-actions[bot]@users.noreply.github.com commit -m 'Implement independently verified issue 8 game repair'
+          git push origin "HEAD:refs/heads/$branch"
+          gh pr create --draft --base main --head "$branch" --title 'Issue 8 자동 수정 검토 후보' --body "PC·모바일 시나리오 12개 및 기존 회귀 검사 통과. 승인 댓글 7091498356. 검증 기록 https://github.com/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
