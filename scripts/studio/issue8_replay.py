@@ -47,11 +47,15 @@ if sys.argv[1:] == ["repair"]:
                           "Read actual helper bodies, identifiers and phase values in source_context. "
                           "In your reasoning simulate level 2 at 1980 plus two dots, level 3 at red 4 blue 6, "
                           "and mouse and touch result button activation. Preserve existing passing controls.", inputs, 4500)
-    assert all(isinstance(answer.get(k), str) and answer[k].strip() for k in ("chain", "buttons"))
-    patched = source[:start] + answer["chain"] + "\n" + source[end:buttons] + answer["buttons"] + "\n" + source[mute:]
-    proposed = engine.apply_file_response({"files": {"script.js": patched}}, {"script.js":"write"}, assets, True)
     output = folder / "result"
     output.mkdir(exist_ok=True)
+    (output / "provider-response.json").write_text(engine.canonical(answer), encoding="utf-8")
+    if not all(isinstance(answer.get(k), str) and answer[k].strip() for k in ("chain", "buttons")):
+        fields = {k: type(value).__name__ for k, value in answer.items()}
+        raise engine.Stop("Invalid replacement blocks; response preserved for offline review: " +
+                          engine.canonical(fields)[:500])
+    patched = source[:start] + answer["chain"] + "\n" + source[end:buttons] + answer["buttons"] + "\n" + source[mute:]
+    proposed = engine.apply_file_response({"files": {"script.js": patched}}, {"script.js":"write"}, assets, True)
     for name in scope:
         (output / name).write_bytes(proposed[name])
     passed, log = engine.run_qa(proposed, full)
