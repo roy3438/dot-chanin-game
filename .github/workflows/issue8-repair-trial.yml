@@ -9,7 +9,7 @@ permissions:
 jobs:
   replay:
     if: >-
-      github.run_attempt == 1 && github.event.before == '9115b8c8343e7f848bff693c9ea2fc4975918369' &&
+      github.run_attempt == 1 && github.event.before == 'c34db3daf03fb57ad0a162a4de4f69f3957efdfd' &&
       github.event.pull_request.head.repo.full_name == github.repository &&
       github.head_ref == 'studio/repair-from-evidence' &&
       github.event.pull_request.user.login == github.repository_owner
@@ -41,8 +41,7 @@ jobs:
           python3 scripts/studio/test_resume.py
       - name: Generate independent repair and verify all cases
         env:
-          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-          GEMINI_MODEL: ${{ vars.GEMINI_MODEL }}
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
         run: python3 scripts/studio/issue8_replay.py repair
       - name: Archive generated files and evidence
         if: always()
