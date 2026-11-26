@@ -21,6 +21,35 @@ engine.validate_task_plan(plan, inventory, envelope["task"])
 scope = {key: op for step in plan["steps"] for key, op in step["files"].items()}
 assets = engine.apply_file_response({"files": candidate["state"]["files"]}, scope, baseline, True)
 full = dict(plan, dot_chain_regression=True, tests=[*plan["tests"], engine.level_two_negative(plan)])
+if sys.argv[1:] == ["repair"]:
+    source = assets["script.js"].decode()
+    # Restrict the repair to the two handlers implicated by the recorded interactions.
+    start = source.index("  function endSelection(")
+    end = source.index("  function clearDots(", start)
+    buttons = source.index("  $restartBtn.addEventListener(")
+    mute = source.index("  $muteBtn.addEventListener(", buttons)
+    inputs = {
+        "browser_result": "Lv2 two red: moves 5->4, score stays 1980 instead of 2020. Lv3 two red: red stays 4 instead of 6, blue already 6, score stays 1980. Mobile next/restart receive pointerup but no click before assertion. Desktop works.",
+        "chain": source[start:end], "buttons": source[buttons:mute],
+        "helpers": "addScore(delta,0,0) already increments score; clearDots(positions) replaces selected cells; clearSelection resets selected; finishGame(victory) saves and displays outcome; updateUI and saveState exist; randomizeBoard, renderBoard and generateMission exist.",
+        "rules": "Valid chain awards 10*length^2 at all levels; retain existing bonuses. A move costs one turn. Level 1 score>=2000 wins. Level 2 needs score and longChain (5+ at least once). Level 3 needs score and cumulative red AND blue >=6. Win before last-turn loss. Existing level1 baseline two red +40. Preserve legacy saves. Restart resets current level score/moves/mission/board and next level starts fresh with 20 moves, preserving best, unlocked, mute. Click supports keyboard and mouse. For touch handle pointerup immediately on each result button and guard phase/level so a compatibility click cannot double-advance."
+    }
+    engine.GENERATION_LIMITS["api.groq.com"] = 1
+    answer = engine.Groq().ask("Replace both provided JavaScript blocks. Return JSON with chain and buttons string fields containing complete drop-in JS for each block, no markdown. Keep original identifiers; preserve cleanup and save. Compute selected color before clearing. Normal UI and negative cases must work.", inputs, 3000)
+    assert all(isinstance(answer.get(k), str) and answer[k].strip() for k in ("chain", "buttons"))
+    patched = source[:start] + answer["chain"] + "\n" + source[end:buttons] + answer["buttons"] + "\n" + source[mute:]
+    proposed = engine.apply_file_response({"files": {"script.js": patched}}, {"script.js":"write"}, assets, True)
+    output = folder / "result"
+    output.mkdir(exist_ok=True)
+    passed, log = engine.run_qa(proposed, full)
+    (output / "qa.log").write_text(log)
+    print(log, flush=True)
+    if not passed:
+        raise SystemExit("Full candidate QA failed")
+    for name in scope:
+        (output / name).write_bytes(proposed[name])
+    raise SystemExit(0)
+
 if sys.argv[1:] != ["acceptance"]:
     raise SystemExit("Expected acceptance replay")
 
