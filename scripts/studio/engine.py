@@ -661,6 +661,26 @@ def level_two_negative(plan):
     raise Stop("레벨 2 시험 상태가 필요합니다.")
 
 
+def verify_repair(qa, proposed, plan, evidence):
+    """Replay the failing case before promoting proposed files."""
+    focused = plan
+    if evidence:
+        matching = [case for case in plan["tests"] if case["name"] == evidence["case"]]
+        if matching or (plan.get("dot_chain_regression") and evidence["case"] in {"two_adjacent_dots", "won", "lost"}):
+            focused = dict(plan, tests=matching)
+    passed, log = qa(proposed, focused)
+    if not passed:
+        after = failure_evidence(log)
+        details = log[-500:]
+        if evidence and after and all(evidence.get(key) == after.get(key)
+                                      for key in ("case", "device", "seed", "action", "expected")):
+            details = canonical({key: {"expected": value, "before": evidence["observed"].get(key),
+                                       "after": after["observed"].get(key)}
+                                 for key, value in evidence["expected"].items()
+                                 if after["observed"].get(key) != value})
+        raise Stop("수정 기각: 원래 시험 또는 회귀 시험 실패. 기존 후보 유지. " + details)
+
+
 def deploy_candidate(ai, plan, task, baseline, qa, progress, groq_step_two=False, checkpoint=None):
     if groq_step_two:
         require(len(plan['steps']) >= 2 and os.environ.get('GROQ_API_KEY'),
@@ -737,12 +757,15 @@ def deploy_candidate(ai, plan, task, baseline, qa, progress, groq_step_two=False
                        safe_block(canonical({"검토": review, "브라우저": log})[:3800]))
         progress(f"QA 수정 {attempt + 1}/2")
         if groq_developer:
-            assets = repair_with_groq(groq_developer, plan, scope, assets, review, log, baseline, prior_evidence)
+            proposed = repair_with_groq(groq_developer, plan, scope, assets, review, log, baseline, prior_evidence)
         else:
-            assets = change_files(ai, "개발 담당. 승인된 시험을 통과하도록 원인을 수정하세요.",
+            proposed = change_files(ai, "개발 담당. 승인된 시험을 통과하도록 원인을 수정하세요.",
                                   {"scope": scope, "plan": plan, "source": source_context(assets),
                                    "review_findings": review, "browser_result": log},
                                   scope, assets, False)
+        if not passed:
+            verify_repair(qa, proposed, qa_plan, evidence)
+        assets = proposed
         if checkpoint:
             checkpoint.save(assets, scope, len(plan["steps"]), attempt + 1, None if review else [])
         if review:
@@ -797,7 +820,12 @@ def run_qa(assets, plan):
             subprocess.run(["docker", "rm", "-f", container], capture_output=True, timeout=15)
             raise Stop("브라우저 QA 시간 초과. 후보를 보존하고 실행 환경을 점검하세요.") from None
         require(result.returncode != 125, "격리 QA 컨테이너 실행 실패")
-        log = (result.stdout + result.stderr).decode(errors="replace")[-5000:]
+        output = (result.stdout + result.stderr).decode(errors="replace")
+        log = output[-5000:]
+        if result.returncode and not any(row.startswith("STUDIO_EVIDENCE ") for row in log.splitlines()):
+            first = next((row for row in output.splitlines() if row.startswith("STUDIO_EVIDENCE ")), "")
+            if first and len(first) <= 6000:
+                log = first + "\n" + log
         require(result.returncode in (0, 1), "QA 프로세스가 예기치 않게 종료됐습니다.")
         require("STUDIO_QA_INFRA" not in log, "QA 환경 초기화 실패. 브라우저 및 컨테이너 설정을 확인하세요.")
         if result.returncode == 0 and "\nSTUDIO_QA_PASS\n" in log:
