@@ -606,6 +606,13 @@ def repair_with_groq(ai, plan, scope, assets, review, log, baseline=None, previo
                 # The structured case already contains the assertion and measured observations.
                 file_context["browser_result"] = evidence["case"]
                 file_context["original_reference"] = context["original_reference"][:1]
+            if evidence.get("rejected_repair"):
+                # The current source is the last passing candidate. Match line numbers to enclosing functions.
+                file_context["original_reference"] = []
+                file_context["repair_instruction"] = (
+                    "Work from this passing source. The rejected diff broke a passing control. "
+                    "Locate the failing action in its enclosing branch. Keep passing branches intact. "
+                    "Check each proposed replacement against its enclosing function before returning it.")
             result = ai.ask(
                 'Use the numbered source and all QA cases. Fix the underlying state transitions, '
                 'including readers that depend on changed values. Return JSON '
