@@ -1,5 +1,6 @@
 """Plan, approve, build, test and publish static browser games."""
 import base64
+import hashlib
 import json
 import math
 import os
@@ -38,6 +39,10 @@ class Stop(Exception):
 def require(condition, message):
     if not condition:
         raise Stop(message)
+
+
+class RejectedRepair(Stop):
+    """A completed repair that failed its acceptance check."""
 
 
 class TemporaryGeminiError(Stop):
@@ -625,7 +630,8 @@ def repair_with_groq(ai, plan, scope, assets, review, log, baseline=None, previo
         else:
             updated = change_files(ai, "승인된 시험 실패를 고치고 다른 파일과의 연결 규약을 유지하세요.",
                                    file_context, {path: scope[path]}, updated, True)
-    require(updated != assets, "자동 수정 결과가 후보와 동일합니다. 추가 요청을 중단합니다.")
+    if updated == assets:
+        raise RejectedRepair("자동 수정 결과가 후보와 동일합니다. 추가 요청을 중단합니다.")
     return updated
 
 
@@ -641,7 +647,8 @@ class Checkpoint:
             self.state = saved["state"]
 
     def save(self, assets, scope, stage, repairs, review, log=""):
-        self.state = {"files": {name: assets[name].decode() if name in assets else None for name in scope},
+        rejected = self.state.get("rejected_repairs", [])
+        self.state = {"rejected_repairs": rejected, "files": {name: assets[name].decode() if name in assets else None for name in scope},
                       "stage": stage, "repairs": repairs, "review": review, "log": log}
         temp = self.file.with_suffix(".tmp")
         temp.write_text(canonical({"identity": self.identity, "state": self.state}), encoding="utf-8")
@@ -678,7 +685,7 @@ def verify_repair(qa, proposed, plan, evidence):
                                        "after": after["observed"].get(key)}
                                  for key, value in evidence["expected"].items()
                                  if after["observed"].get(key) != value})
-        raise Stop("수정 기각: 원래 시험 또는 회귀 시험 실패. 기존 후보 유지. " + details)
+        raise RejectedRepair("수정 기각: 원래 시험 또는 회귀 시험 실패. 기존 후보 유지. " + details)
 
 
 def deploy_candidate(ai, plan, task, baseline, qa, progress, groq_step_two=False, checkpoint=None):
@@ -755,16 +762,33 @@ def deploy_candidate(ai, plan, task, baseline, qa, progress, groq_step_two=False
         if attempt == 2:
             raise Stop("QA 자동 수정 2회 후 중단. 최근 결과\n" +
                        safe_block(canonical({"검토": review, "브라우저": log})[:3800]))
+        if checkpoint:
+            # A new process can restore the same candidate after a rejected proposal.
+            # Ignore volatile browser timings when structured observations are available.
+            fingerprint = hashlib.sha256(canonical([
+                checkpoint.state["files"], qa_plan, review, evidence or log,
+                "groq" if groq_developer else "gemini",
+            ]).encode()).hexdigest()
+            require(fingerprint not in checkpoint.state.get("rejected_repairs", []),
+                    "이 후보와 QA 근거로 시도한 수정은 이미 기각됐습니다. 모델 재호출을 중단합니다.")
         progress(f"QA 수정 {attempt + 1}/2")
-        if groq_developer:
-            proposed = repair_with_groq(groq_developer, plan, scope, assets, review, log, baseline, prior_evidence)
-        else:
-            proposed = change_files(ai, "개발 담당. 승인된 시험을 통과하도록 원인을 수정하세요.",
-                                  {"scope": scope, "plan": plan, "source": source_context(assets),
-                                   "review_findings": review, "browser_result": log},
-                                  scope, assets, False)
-        if not passed:
-            verify_repair(qa, proposed, qa_plan, evidence)
+        try:
+            if groq_developer:
+                proposed = repair_with_groq(groq_developer, plan, scope, assets, review, log, baseline, prior_evidence)
+            else:
+                proposed = change_files(ai, "개발 담당. 승인된 시험을 통과하도록 원인을 수정하세요.",
+                                      {"scope": scope, "plan": plan, "source": source_context(assets),
+                                       "review_findings": review, "browser_result": log},
+                                      scope, assets, False)
+            if proposed == assets:
+                raise RejectedRepair("자동 수정 결과가 후보와 동일합니다.")
+            if not passed:
+                verify_repair(qa, proposed, qa_plan, evidence)
+        except RejectedRepair:
+            if checkpoint:
+                checkpoint.state["rejected_repairs"].append(fingerprint)
+                checkpoint.save(assets, scope, len(plan["steps"]), attempt, review, log)
+            raise
         assets = proposed
         if checkpoint:
             checkpoint.save(assets, scope, len(plan["steps"]), attempt + 1, None if review else [])
