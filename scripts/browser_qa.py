@@ -155,32 +155,29 @@ def run_case(browser, label, viewport, touch, probe_only=False, scenarios=(), ve
         assert read_state(page)["score"] == 0
         assert read_state(page)["moves"] == 20
 
-        # A two-dot chain awards 40, crossing the 2,000-point win goal.
+        outcomes = []
+        for seed, phase, title in ((saved_state(score=1980), "won", "승리!"),
+                                   (saved_state(moves=1), "lost", "패배")):
+            put_state(page, seed)
+            gesture(page)
+            state = read_state(page)
+            expected = {"phase": phase, "score": seed["score"] + 40, "moves": seed["moves"] - 1,
+                        "visible": True, "title": title}
+            observed = {key: state.get(key) for key in ("phase", "score", "moves")}
+            observed.update(visible=page.locator("#result").is_visible(),
+                            title=page.locator("#result-title").text_content(timeout=2500))
+            outcomes.append({"case": phase, "seed": seed, "expected": expected, "observed": observed})
+        failures = [case for case in outcomes if case["expected"] != case["observed"]]
+        if failures:
+            evidence = dict(failures[0], device=label, action="drag cell 0 to adjacent cell 1",
+                            terminal_cases=outcomes)
+            print("STUDIO_EVIDENCE " + json.dumps(evidence, ensure_ascii=False, separators=(",", ":")), flush=True)
+            raise AssertionError("Terminal state mismatch: " + ", ".join(case["case"] for case in failures))
+        print(f"PASS {label}: saved and visible win/loss outcomes", flush=True)
         put_state(page, saved_state(score=1980))
         gesture(page)
-        assert read_state(page)["phase"] == "won"
-        assert page.locator("#result").is_visible()
-        assert page.locator("#result-title").inner_text() == "승리!"
         page.locator("#restart").click()
         assert read_state(page)["phase"] == "playing"
-
-        # Exhaust the last move below the target.
-        put_state(page, saved_state(score=0, moves=1))
-        # Wait for move 1 -> 0 instead of the default gesture wait condition.
-        first = page.locator(".cell").nth(0).bounding_box()
-        second = page.locator(".cell").nth(1).bounding_box()
-        a = (first["x"] + first["width"]/2, first["y"] + first["height"]/2)
-        b = (second["x"] + second["width"]/2, second["y"] + second["height"]/2)
-        page.mouse.move(*a)
-        page.mouse.down()
-        page.mouse.move(*b, steps=5)
-        page.mouse.up()
-        page.wait_for_function(
-            "key => JSON.parse(localStorage.getItem(key)).moves === 0",
-            arg=KEY, timeout=5000,
-        )
-        assert read_state(page)["phase"] == "lost"
-        assert page.locator("#result-title").inner_text() == "패배"
         assert not errors, f"Browser JavaScript errors: {errors}"
         print(f"PASS: {label}")
     except Exception:
