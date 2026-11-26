@@ -9,7 +9,7 @@ permissions:
 jobs:
   replay:
     if: >-
-      github.run_attempt == 1 && github.event.before == 'e87c1132599b449b8da2983c5abaa1486e24077d' &&
+      github.run_attempt == 1 && github.event.before == '8872e87de77249f32518e07e33dc00f7aeb8cb9e' &&
       github.event.pull_request.head.repo.full_name == github.repository &&
       github.head_ref == 'studio/repair-from-evidence' &&
       github.event.pull_request.user.login == github.repository_owner
