@@ -122,6 +122,19 @@ def run_case(browser, origin, entry, scenario, viewport, touch):
     context.route("**/*", route_request)
     context.route_web_socket("**/*", lambda socket: socket.close())
     page = context.new_page()
+    page.add_init_script("""(() => {
+        const events = [];
+        window.__studioInput = events;
+        for (const type of ['pointerdown', 'pointerup', 'pointercancel', 'click']) {
+            document.addEventListener(type, event => {
+                if (!event.isTrusted) return;
+                const target = event.target.closest?.('button, [data-pos], [id]');
+                events.push([type, target?.id || target?.getAttribute('data-pos') || '']);
+                if (events.length > 8) events.shift();
+            }, {capture:true, passive:true});
+        }
+    })()""")
+    interactions = []
     page.set_default_timeout(2500)
     page.on("pageerror", lambda error: problems.append(f"JavaScript: {error}"))
     page.on("response", lambda response: problems.append(f"HTTP {response.status}: {response.url}")
@@ -145,7 +158,15 @@ def run_case(browser, origin, entry, scenario, viewport, touch):
         for index, action in enumerate(scenario["steps"], 1):
             try:
                 execute(page, action, touch)
+                if action["do"] in ("drag", "click") and scenario.get("seed", {}).get("dot-chain-v1"):
+                    interactions.append({"step": index, "input": page.evaluate("window.__studioInput.slice(-4)"),
+                                         "state": mission_observation(page)})
             except (AssertionError, BrowserTimeout) as error:
+                if interactions:
+                    row = {"case": scenario["name"], "device": "mobile" if touch else "desktop",
+                           "step": index, "assertion": action, "after_input": interactions[-2:],
+                           "at_failure": mission_observation(page)}
+                    print("STUDIO_TRACE " + json.dumps(row, ensure_ascii=False, separators=(",", ":")), flush=True)
                 if action["do"] == "playing-after-short-chain":
                     state = mission_observation(page)
                     initial = scenario["seed"]["dot-chain-v1"]
