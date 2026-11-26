@@ -675,6 +675,36 @@ def level_two_negative(plan):
     raise Stop("레벨 2 시험 상태가 필요합니다.")
 
 
+def level_continuity_cases():
+    """Exercise previously unobserved board and save transitions with deterministic fixtures."""
+    board = [["red", "blue", "green", "yellow"][(row + col) % 4]
+             for row in range(6) for col in range(6)]
+    board[24:26] = ["blue", "green"]
+    board[30:32] = ["red", "red"]
+    board[4:6] = ["yellow", "yellow"]  # A surviving pair prevents automatic reshuffling.
+    seed = {"board": board, "score": 0, "best": 0, "moves": 20, "phase": "playing",
+            "level": 2, "unlocked": 2, "mute": True, "mission": {"kind": "length", "bonus": 200},
+            "missionProgress": {"longChain": False}}
+    # Supply a valid five-dot path independently of the two bottom dots.
+    board[6:11] = ["red"] * 5
+    drag = {"do": "drag", "selector": "[data-pos='30']", "target": "[data-pos='31']"}
+    landed = [{"do": "visible", "selector": f"[data-pos='{pos}'] .dot.{color}"}
+              for pos, color in ((30, "blue"), (31, "green"))]
+    def scenario(name, state, steps):
+        return {"name": name, "seed": {"dot-chain-v1": state}, "steps": steps}
+    return [
+        scenario("짧은 연결 뒤 낙하 및 판 복원", seed,
+                 [drag, *landed, {"do": "reload"}, *landed]),
+        scenario("승리 상태에서 새로고침 후 다음 레벨 진입",
+                 dict(seed, level=1, score=2020, best=2020, moves=0, phase="won", mission=None),
+                 [{"do": "visible", "selector": "#result"}, {"do": "click", "selector": "#next-level"},
+                  {"do": "text", "selector": "#level-indicator", "value": "레벨 2"}]),
+        scenario("새 게임 후 음소거 유지", seed,
+                 [{"do": "click", "selector": "#new-game"}, {"do": "reload"},
+                  {"do": "text", "selector": "#mute-btn", "value": "음소거 켜짐"}]),
+    ]
+
+
 def verify_repair(qa, proposed, plan, evidence):
     """Replay the failing case before promoting proposed files."""
     focused = plan
@@ -741,7 +771,7 @@ def deploy_candidate(ai, plan, task, baseline, qa, progress, groq_step_two=False
         ai.model = collaboration_model
         ai.checked = False
     if "[dot-chain-levels]" in task:
-        qa_plan["tests"] = [*plan["tests"], level_two_negative(plan)]
+        qa_plan["tests"] = [*plan["tests"], level_two_negative(plan), *level_continuity_cases()]
     if review is None:
         progress("QA 코드 검토")
         review = ai.ask('QA 담당. 승인 범위, 규칙, 모바일 조작과 코드 오류를 검토. '
