@@ -34,20 +34,31 @@ if sys.argv[1:] == ["repair"]:
         "helpers": "addScore(delta,0,0) already increments score; clearDots(positions) replaces selected cells; clearSelection resets selected; finishGame(victory) saves and displays outcome; updateUI and saveState exist; randomizeBoard, renderBoard and generateMission exist.",
         "rules": "Valid chain awards 10*length^2 at all levels; retain existing bonuses. A move costs one turn. Level 1 score>=2000 wins. Level 2 needs score and longChain (5+ at least once). Level 3 needs score and cumulative red AND blue >=6. Win before last-turn loss. Existing level1 baseline two red +40. Preserve legacy saves. Restart resets current level score/moves/mission/board and next level starts fresh with 20 moves, preserving best, unlocked, mute. Click supports keyboard and mouse. For touch handle pointerup immediately on each result button and guard phase/level so a compatibility click cannot double-advance."
     }
+    inputs["source_context"] = source[:start] + source[end:buttons] + source[mute:]
+    inputs["previous_result"] = ("A previous candidate regressed desktop next-level even when click reached the "
+                                 "button. After a win the saved phase is 'won'; after loss it is 'lost'. "
+                                 "Retain working mouse click behavior and add touch activation to both result buttons.")
+    inputs["approved_task"] = envelope["task"]
+    engine.GENERATION_LIMITS["generativelanguage.googleapis.com"] = 1
     engine.GENERATION_LIMITS["api.groq.com"] = 1
-    answer = engine.Groq().ask("Replace both provided JavaScript blocks. Return JSON with chain and buttons string fields containing complete drop-in JS for each block, no markdown. Keep original identifiers; preserve cleanup and save. Compute selected color before clearing. Normal UI and negative cases must work.", inputs, 3000)
+    provider = engine.Gemini() if os.environ.get("GEMINI_API_KEY") else engine.Groq()
+    answer = provider.ask("Implement the approved behavior for all cases, including legacy saves. "
+                          "Return JSON containing chain and buttons as complete replacement JS strings. "
+                          "Read actual helper bodies, identifiers and phase values in source_context. "
+                          "In your reasoning simulate level 2 at 1980 plus two dots, level 3 at red 4 blue 6, "
+                          "and mouse and touch result button activation. Preserve existing passing controls.", inputs, 4500)
     assert all(isinstance(answer.get(k), str) and answer[k].strip() for k in ("chain", "buttons"))
     patched = source[:start] + answer["chain"] + "\n" + source[end:buttons] + answer["buttons"] + "\n" + source[mute:]
     proposed = engine.apply_file_response({"files": {"script.js": patched}}, {"script.js":"write"}, assets, True)
     output = folder / "result"
     output.mkdir(exist_ok=True)
+    for name in scope:
+        (output / name).write_bytes(proposed[name])
     passed, log = engine.run_qa(proposed, full)
     (output / "qa.log").write_text(log)
     print(log, flush=True)
     if not passed:
         raise SystemExit("Full candidate QA failed")
-    for name in scope:
-        (output / name).write_bytes(proposed[name])
     raise SystemExit(0)
 
 if sys.argv[1:] != ["acceptance"]:
