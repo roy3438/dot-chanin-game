@@ -59,6 +59,17 @@ class RetryTests(unittest.TestCase):
                 engine.Groq().ask("fixture", data, 100)
             network.assert_called_once()
 
+    def test_repair_gate_uses_same_case_and_keeps_regression(self):
+        evidence = {"case": "short"}
+        plan = {"tests": [{"name": "long"}, {"name": "short"}], "dot_chain_regression": True}
+        qa = Mock(return_value=(True, "PASS"))
+        engine.verify_repair(qa, {"game.js": b"candidate"}, plan, evidence)
+        self.assertEqual(qa.call_args.args[1], {"tests": [{"name": "short"}], "dot_chain_regression": True})
+        self.assertEqual(len(plan["tests"]), 2)
+        qa.return_value = False, "legacy drag failed"
+        with self.assertRaisesRegex(engine.Stop, "기존 후보 유지"):
+            engine.verify_repair(qa, {}, plan, evidence)
+
     def test_level_two_short_chain_is_independent(self):
         original = {"level": 2, "score": 1900, "moves": 5, "missionProgress": {"longChain": False}}
         plan = {"tests": [{"seed": {"dot-chain-v1": json.dumps(original)}}]}
