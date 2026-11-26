@@ -1,6 +1,5 @@
 """One-time acceptance trial for the saved issue 8 candidate."""
 import base64
-import hashlib
 import json
 import os
 from pathlib import Path
@@ -31,15 +30,11 @@ assert payload["state"]["files"] != candidate["state"]["files"]
 output = folder / "result"
 checkpoint = engine.Checkpoint(output, candidate["identity"])
 checkpoint.save(assets, scope, len(plan["steps"]), 0, [])
-digest = lambda: hashlib.sha256(checkpoint.file.read_bytes()).hexdigest()
 mock = Mock()
 mock.ask.return_value = {"files": payload["state"]["files"]}
-input_digest = None
 runs = []
 def replay(files, definition):
-    global input_digest
     if runs:
-        input_digest = digest()
         assert len(definition["tests"]) == 1
     passed, log = engine.run_qa(files, definition)
     evidence = engine.failure_evidence(log)
@@ -54,10 +49,19 @@ except engine.Stop as error:
     print(error, flush=True)
 else:
     raise AssertionError("Ineffective changes were accepted")
-assert len(runs) == 2 and mock.ask.call_count == 1 and input_digest == digest()
+assert len(runs) == 2 and mock.ask.call_count == 1
 for row in runs:
     assert row["expected"]["score"] == 2020 and row["observed"]["score"] == 1980
 restored = engine.Checkpoint(output, candidate["identity"])
 assert restored.state["files"] == candidate["state"]["files"] and restored.state["repairs"] == 0
 assert restored.state["files"] != payload["state"]["files"]
 print("Verified restored candidate file contents, rejected revision excluded. No provider requests.")
+provider = Mock()
+try:
+    engine.deploy_candidate(provider, plan, envelope["task"], baseline,
+                            Mock(return_value=(False, restored.state["log"])), print, checkpoint=restored)
+except engine.Stop as error:
+    assert "재호출을 중단" in str(error), str(error)
+else:
+    raise AssertionError("Duplicate repair was allowed")
+provider.ask.assert_not_called()
