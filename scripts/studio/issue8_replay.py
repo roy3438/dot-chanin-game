@@ -1,5 +1,6 @@
 """One-time acceptance trial for the saved issue 8 candidate."""
 import base64
+import difflib
 import json
 import os
 from pathlib import Path
@@ -33,6 +34,21 @@ if sys.argv[1] == "offline":
             pass
         else:
             raise AssertionError("Invalid source edit accepted")
+    rejected = json.loads((folder / "rejected.json").read_text())
+    assert rejected["identity"] == candidate["identity"]
+    bad_assets = engine.apply_file_response({"files": rejected["state"]["files"]}, scope, baseline, True)
+    guard = dict(plan, dot_chain_regression=True, probe_only=True, tests=[])
+    good, good_log = engine.run_qa(assets, guard)
+    bad, bad_log = engine.run_qa(bad_assets, guard)
+    assert good and not bad, good_log + bad_log
+    errors = [line for line in bad_log.splitlines() if line.startswith("STUDIO_PAGE_ERRORS ")]
+    changes = {}
+    for name in scope:
+        if assets.get(name) != bad_assets.get(name):
+            changes[name] = "\n".join(difflib.unified_diff(
+                assets.get(name, b"").decode().splitlines(), bad_assets.get(name, b"").decode().splitlines(),
+                n=1, lineterm=""))[:1200]
+    print("Rejected changes:", changes, "Browser errors:", errors, flush=True)
     short = engine.level_two_negative(plan)
     def initial(row):
         raw = row.get("seed", {}).get("dot-chain-v1", {})
@@ -46,7 +62,8 @@ if sys.argv[1] == "offline":
     evidence = engine.failure_evidence(log)
     assert not passed and evidence and controls, log
     assert evidence["seed"]["level"] == 2 and all(case["score"] >= 2000 for case in controls)
-    evidence["passing_control"] = {"seed": initial(long), "actions": long["steps"], "observed": controls[0]}
+    evidence["passing_control"] = {"initial_score": initial(long)["score"], "observed": controls[0]}
+    evidence["rejected_repair"] = {"changes": changes, "errors": errors, "guard": "Same legacy two-dot drag passed on input and failed on rejected revision."}
     print("Level 2 comparison", controls[0], evidence["observed"], flush=True)
     log_path.write_text("STUDIO_EVIDENCE " + json.dumps(evidence, ensure_ascii=False))
 elif sys.argv[1] == "live":
@@ -57,6 +74,10 @@ elif sys.argv[1] == "live":
         print("Physical Groq requests:", engine.generation_counts["api.groq.com"], flush=True)
     output = folder / "result"
     engine.Checkpoint(output, candidate["identity"]).save(fixed, scope, len(plan["steps"]), 2, [])
+    short = engine.level_two_negative(plan)
+    target_ok, target_log = engine.run_qa(fixed, dict(plan, dot_chain_regression=False,
+                                                      tests=[dict(short, capture_mission=True)]))
+    print("Target QA:", target_ok, target_log, flush=True)
     passed, log = engine.run_qa(fixed, full)
     print("Full QA", passed, log, flush=True)
     (output / "qa.log").write_text(log)
