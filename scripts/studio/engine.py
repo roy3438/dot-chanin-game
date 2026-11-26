@@ -530,6 +530,29 @@ def reference_sections(baseline, evidence):
     return [{"path": path, "source": body} for _, _, path, body in ranked[:2]]
 
 
+def apply_line_edits(source, edits):
+    require(isinstance(edits, list) and len(edits) <= 24, "수정 목록 형식 오류")
+    lines = source.splitlines(keepends=True)
+    replacements = []
+    for edit in edits:
+        require(isinstance(edit, dict), "수정 항목 형식 오류")
+        start, end = edit.get("start"), edit.get("end")
+        anchor, replacement = edit.get("anchor"), edit.get("replacement")
+        require(type(start) is int and type(end) is int and 1 <= start <= end <= len(lines),
+                "수정 줄 번호 오류")
+        require(isinstance(anchor, str) and anchor.strip() and lines[start - 1].strip() == anchor.strip()
+                and isinstance(replacement, str), "수정 시작 줄 원문 불일치")
+        if replacement and not replacement.endswith("\n") and lines[end - 1].endswith("\n"):
+            replacement += "\n"
+        replacements.append((start, end, replacement))
+    boundary = len(lines) + 1
+    for start, end, replacement in sorted(replacements, reverse=True):
+        require(end < boundary, "수정 위치 중복")
+        lines[start - 1:end] = [replacement]
+        boundary = start
+    return "".join(lines)
+
+
 def repair_with_groq(ai, plan, scope, assets, review, log, baseline=None, previous_evidence=None):
     evidence = failure_evidence(log)
     diagnostics = [line.strip() for line in log.splitlines()
@@ -577,19 +600,16 @@ def repair_with_groq(ai, plan, scope, assets, review, log, baseline=None, previo
                     writes.append({"line": number, "code": line.strip()[:160]})
             file_context["candidate_write_sites"] = writes[:16]
 
+            lines = source[path].splitlines(keepends=True)
+            file_context["source"] = {path: "".join(f"{n}|{line}" for n, line in enumerate(lines, 1))}
             result = ai.ask(
-                '근거와 원본 동작을 비교해 원인을 고치세요. 후보 파일에서 각각 한 번만 나타나는 부분을 '
-                '정확히 교체하세요. JSON {"edits":[{"before":"현재 원문","after":"교체할 원문"}]}. '
-                '필요 없는 파일이면 빈 배열을 반환하세요. 시험과 시험 데이터를 변경하지 마세요.',
+                'Use the numbered source and all QA cases. Fix the underlying state transitions, '
+                'including readers that depend on changed values. Return JSON '
+                '{"edits":[{"start":1,"end":1,"anchor":"exact first original line without number",'
+                '"replacement":"complete new lines without numbers"}]}. Use inclusive, non-overlapping '
+                'original line numbers. Preserve indentation. Return empty edits if unnecessary.',
                 file_context, 3500)
-            edits = result.get("edits")
-            require(isinstance(edits, list) and len(edits) <= 24, "수정 목록 형식 오류")
-            body = source[path]
-            for edit in edits:
-                require(isinstance(edit, dict) and isinstance(edit.get("before"), str) and
-                        edit["before"] and isinstance(edit.get("after"), str) and body.count(edit["before"]) == 1,
-                        "수정할 원문 위치가 유일하지 않습니다.")
-                body = body.replace(edit["before"], edit["after"], 1)
+            body = apply_line_edits(source[path], result.get("edits"))
             updated = apply_file_response({"files": {path: body}}, {path: scope[path]}, updated, True)
         else:
             updated = change_files(ai, "승인된 시험 실패를 고치고 다른 파일과의 연결 규약을 유지하세요.",
