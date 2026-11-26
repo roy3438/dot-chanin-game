@@ -181,6 +181,8 @@ def run_case(browser, label, viewport, touch, probe_only=False, scenarios=(), ve
         assert not errors, f"Browser JavaScript errors: {errors}"
         print(f"PASS: {label}")
     except Exception:
+        if errors:
+            print("STUDIO_PAGE_ERRORS " + json.dumps(errors[:3], ensure_ascii=False)[:600], flush=True)
         EVIDENCE.mkdir(parents=True, exist_ok=True)
         page.screenshot(path=str(EVIDENCE / f"{label}.png"), full_page=True)
         (EVIDENCE / f"{label}.txt").write_text(
