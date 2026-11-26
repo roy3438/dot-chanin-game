@@ -9,7 +9,7 @@ permissions:
 jobs:
   replay:
     if: >-
-      github.run_attempt == 1 && github.event.before == '9643aca3895e80373fa1e6eee6a46f36efc7950a' &&
+      github.run_attempt == 1 && github.event.before == 'e87c1132599b449b8da2983c5abaa1486e24077d' &&
       github.event.pull_request.head.repo.full_name == github.repository &&
       github.head_ref == 'studio/repair-from-evidence' &&
       github.event.pull_request.user.login == github.repository_owner
@@ -27,18 +27,14 @@ jobs:
           gh api "repos/$GITHUB_REPOSITORY/actions/artifacts/15096701201/zip" > "$RUNNER_TEMP/issue8.zip"
           echo "c51f7a509cdc1ed64e5a53f108f91c79def80ed4d3fbb3e78c108dee1b0fec0b  $RUNNER_TEMP/issue8.zip" | sha256sum -c -
           unzip -p "$RUNNER_TEMP/issue8.zip" candidate.json > "$RUNNER_TEMP/issue8/candidate.json"
-          gh api "repos/$GITHUB_REPOSITORY/actions/artifacts/15097101080/zip" > "$RUNNER_TEMP/rejected.zip"
-          echo "1e84f8b9b4734974835d2d3c42dc147f9a6917c5f55b2a884ee8a8415590a764  $RUNNER_TEMP/rejected.zip" | sha256sum -c -
+          gh api "repos/$GITHUB_REPOSITORY/actions/artifacts/15098078526/zip" > "$RUNNER_TEMP/rejected.zip"
+          echo "714b49872ac709cafe0246ee09cafc448696f1186b847a18e009fd86d0bd37f1  $RUNNER_TEMP/rejected.zip" | sha256sum -c -
           unzip -p "$RUNNER_TEMP/rejected.zip" candidate.json > "$RUNNER_TEMP/issue8/rejected.json"
           gh api "repos/$GITHUB_REPOSITORY/issues/comments/7091487940" > "$RUNNER_TEMP/issue8/plan-comment.json"
       - name: Verify reproduction and offline safeguards
         run: |
           python3 scripts/studio/test_resume.py
-          python3 scripts/studio/issue8_replay.py offline
-      - name: Run one repair and verify the candidate
-        env:
-          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
-        run: python3 scripts/studio/issue8_replay.py live
+          python3 scripts/studio/issue8_replay.py acceptance
       - name: Preserve trial result
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
