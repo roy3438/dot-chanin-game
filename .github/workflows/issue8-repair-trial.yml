@@ -9,7 +9,7 @@ permissions:
 jobs:
   replay:
     if: >-
-      github.run_attempt == 1 && github.event.before == '6cb7c1b3f5926e012d8f19b597a248467991221a' &&
+      github.run_attempt == 1 && github.event.before == 'bf7df9bab981c43a6845415bc05f02b39fdc6fa7' &&
       github.event.pull_request.head.repo.full_name == github.repository &&
       github.head_ref == 'studio/repair-from-evidence' &&
       github.event.pull_request.user.login == github.repository_owner
@@ -24,7 +24,9 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           mkdir -p "$RUNNER_TEMP/issue8"
-          gh run download 45555927368 --repo "$GITHUB_REPOSITORY" --name issue8-repair-trial --dir "$RUNNER_TEMP/issue8"
+          gh api "repos/$GITHUB_REPOSITORY/actions/artifacts/15096701201/zip" > "$RUNNER_TEMP/issue8.zip"
+          echo "c51f7a509cdc1ed64e5a53f108f91c79def80ed4d3fbb3e78c108dee1b0fec0b  $RUNNER_TEMP/issue8.zip" | sha256sum -c -
+          unzip -p "$RUNNER_TEMP/issue8.zip" candidate.json > "$RUNNER_TEMP/issue8/candidate.json"
           gh api "repos/$GITHUB_REPOSITORY/issues/comments/7091487940" > "$RUNNER_TEMP/issue8/plan-comment.json"
       - name: Verify reproduction and offline safeguards
         run: |
