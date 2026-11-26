@@ -21,6 +21,42 @@ engine.validate_task_plan(plan, inventory, envelope["task"])
 scope = {key: op for step in plan["steps"] for key, op in step["files"].items()}
 assets = engine.apply_file_response({"files": candidate["state"]["files"]}, scope, baseline, True)
 full = dict(plan, dot_chain_regression=True, tests=[*plan["tests"], engine.level_two_negative(plan)])
+if sys.argv[1:] == ["score"]:
+    # Resume the independently generated 8/12 candidate; freeze every passing input handler.
+    previous = folder / "previous"
+    files = {name: (previous / name).read_text() for name in scope}
+    source = files["script.js"]
+    start = source.index("    let cleared = false;", source.index("  function endSelection("))
+    end = source.index("    // Decrease move counter", start)
+    inputs = {"failed_section": source[start:end], "browser_result":
+              "2 red level2 at 1980 -> expected 2020 playing, got 1980. "
+              "2 red level3 at 1980 red4 blue6 -> expected 2020 won red6 blue6. "
+              "The section only calls addScore for level1, length bonus on level2 or zero on level3.",
+              "contract": "selected is the array of chosen indexes. chainLen already equals its length >=2. "
+              "Always award base points 10*chainLen*chainLen ONCE for every level and clear every valid chain ONCE. "
+              "Keep level2 longChain and bonus, and increment level3 red or blue by chainLen based on "
+              "state.board[selected[0]] BEFORE clearing. addScore(total,0,0) increments saved score. "
+              "Moves, win/loss decisions, persistence and listeners are handled outside this section."}
+    schema = {"type":"object","properties":{"section":{"type":"string"}},
+              "required":["section"],"additionalProperties":False}
+    engine.GENERATION_LIMITS["api.groq.com"] = 1
+    answer = engine.Groq().ask("Write just the replacement JS statements for the indicated section inside "
+                               "endSelection. Do not redefine endSelection or chainLen. Return section string.",
+                               inputs, 1200, schema=schema)
+    output = folder / "result"
+    output.mkdir(exist_ok=True)
+    (output / "provider-response.json").write_text(engine.canonical(answer))
+    section = answer["section"]
+    assert isinstance(section, str) and section.strip()
+    files["script.js"] = source[:start] + section + "\n" + source[end:]
+    proposed = engine.apply_file_response({"files": files}, scope, baseline, True)
+    for name in scope:
+        (output / name).write_bytes(proposed[name])
+    passed, log = engine.run_qa(proposed, full)
+    (output / "qa.log").write_text(log)
+    print(log, flush=True)
+    raise SystemExit(0 if passed else 1)
+
 if sys.argv[1:] == ["repair"]:
     source = assets["script.js"].decode()
     # Restrict the repair to the two handlers implicated by the recorded interactions.
