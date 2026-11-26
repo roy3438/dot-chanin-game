@@ -42,11 +42,14 @@ if sys.argv[1:] == ["repair"]:
     engine.GENERATION_LIMITS["generativelanguage.googleapis.com"] = 1
     engine.GENERATION_LIMITS["api.groq.com"] = 1
     provider = engine.Gemini() if os.environ.get("GEMINI_API_KEY") else engine.Groq()
+    schema = {"type": "object", "properties": {k: {"type": "string"} for k in ("chain", "buttons")},
+              "required": ["chain", "buttons"], "additionalProperties": False}
+    format_options = {"schema": schema} if isinstance(provider, engine.Groq) else {}
     answer = provider.ask("Implement the approved behavior for all cases, including legacy saves. "
                           "Return JSON containing chain and buttons as complete replacement JS strings. "
                           "Read actual helper bodies, identifiers and phase values in source_context. "
                           "In your reasoning simulate level 2 at 1980 plus two dots, level 3 at red 4 blue 6, "
-                          "and mouse and touch result button activation. Preserve existing passing controls.", inputs, 4500)
+                          "and mouse and touch result button activation. Preserve existing passing controls.", inputs, 4500, **format_options)
     output = folder / "result"
     output.mkdir(exist_ok=True)
     (output / "provider-response.json").write_text(engine.canonical(answer), encoding="utf-8")
