@@ -9,7 +9,7 @@ permissions:
 jobs:
   replay:
     if: >-
-      github.run_attempt == 1 && github.event.before == 'abab755a14950140b93ac4dd84838448919c2245' &&
+      github.run_attempt == 1 && github.event.before == '0fdea6ada178258f5ed10b697437478af8007620' &&
       github.event.pull_request.head.repo.full_name == github.repository &&
       github.head_ref == 'studio/repair-from-evidence' &&
       github.event.pull_request.user.login == github.repository_owner
@@ -36,13 +36,16 @@ jobs:
           echo "714b49872ac709cafe0246ee09cafc448696f1186b847a18e009fd86d0bd37f1  $RUNNER_TEMP/rejected.zip" | sha256sum -c -
           unzip -p "$RUNNER_TEMP/rejected.zip" candidate.json > "$RUNNER_TEMP/issue8/rejected.json"
           gh api "repos/$GITHUB_REPOSITORY/issues/comments/7091487940" > "$RUNNER_TEMP/issue8/plan-comment.json"
+          gh api "repos/$GITHUB_REPOSITORY/actions/artifacts/15127310627/zip" > "$RUNNER_TEMP/previous.zip"
+          echo "848b83a68413cd39fa46d71fa978c5bd79ca0ddf460d75395cce1cbcf7234f6a  $RUNNER_TEMP/previous.zip" | sha256sum -c -
+          unzip -q "$RUNNER_TEMP/previous.zip" index.html script.js style.css -d "$RUNNER_TEMP/issue8/previous"
       - name: Verify reproduction and offline safeguards
         run: |
           python3 scripts/studio/test_resume.py
       - name: Generate independent repair and verify all cases
         env:
           GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
-        run: python3 scripts/studio/issue8_replay.py repair
+        run: python3 scripts/studio/issue8_replay.py score
       - name: Archive generated files and evidence
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
