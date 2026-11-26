@@ -37,6 +37,13 @@ def replay(files, definition):
     if runs:
         assert len(definition["tests"]) == 1
     passed, log = engine.run_qa(files, definition)
+    if not runs:
+        traces = [json.loads(line.removeprefix("STUDIO_TRACE ")) for line in log.splitlines()
+                  if line.startswith("STUDIO_TRACE ")]
+        assert len(traces) == 6, [(t["case"], t["device"]) for t in traces]
+        (output / "failed-interactions.json").write_text(json.dumps(traces, ensure_ascii=False, indent=2))
+        for trace in traces:
+            print("Observed interaction", json.dumps(trace, ensure_ascii=False), flush=True)
     evidence = engine.failure_evidence(log)
     assert not passed and evidence, log
     runs.append(evidence)
