@@ -98,6 +98,14 @@ def execute(page, action, touch):
         raise AssertionError("Invalid browser action")
 
 
+def mission_observation(page):
+    return page.evaluate("""() => {
+        const s = JSON.parse(localStorage.getItem('dot-chain-v1')) || {};
+        return {score:s.score, moves:s.moves, phase:s.phase, level:s.level,
+                missionProgress:s.missionProgress, title:document.querySelector('#result-title')?.textContent};
+    }""")
+
+
 def run_case(browser, origin, entry, scenario, viewport, touch):
     context = browser.new_context(viewport=viewport, is_mobile=touch, has_touch=touch,
                                   service_workers="block", accept_downloads=False)
@@ -138,9 +146,20 @@ def run_case(browser, origin, entry, scenario, viewport, touch):
             try:
                 execute(page, action, touch)
             except (AssertionError, BrowserTimeout) as error:
+                if action["do"] == "playing-after-short-chain":
+                    state = mission_observation(page)
+                    initial = scenario["seed"]["dot-chain-v1"]
+                    evidence = {"case": scenario["name"], "device": "mobile" if touch else "desktop",
+                                "action": scenario["steps"][0], "seed": initial,
+                                "expected": {"score": initial["score"] + 40, "moves": initial["moves"] - 1,
+                                             "phase": "playing", "missionProgress": {"longChain": False}},
+                                "observed": state}
+                    print("STUDIO_EVIDENCE " + json.dumps(evidence, separators=(",", ":")), flush=True)
                 raise AssertionError(f"Step {index} ({action['do']}): {error}") from None
         assert page.evaluate("document.documentElement.scrollWidth <= innerWidth + 1"), "Horizontal overflow"
         assert not problems, str(problems[:5])
+        if scenario.get("capture_mission"):
+            print("STUDIO_CONTROL " + json.dumps(mission_observation(page)), flush=True)
     finally:
         context.close()
 
