@@ -88,7 +88,7 @@ def execute(page, action, touch):
     elif kind == "playing-after-short-chain":
         page.wait_for_function("""() => {
             const state = JSON.parse(localStorage.getItem('dot-chain-v1'));
-            return state && state.moves === 4 && state.score >= 2000 && state.phase === 'playing'
+            return state && state.moves === 4 && state.score === 2020 && state.phase === 'playing'
                 && state.missionProgress?.longChain === false;
         }""", timeout=2500)
         expect(page.locator("#result")).to_be_hidden()
