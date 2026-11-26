@@ -564,6 +564,10 @@ def repair_with_groq(ai, plan, scope, assets, review, log, baseline=None, previo
                    if line.startswith(("FAIL ", "AssertionError:", "Step "))]
     context = {"summary": plan["summary"], "review_findings": review,
                "browser_result": ("\n".join(diagnostics) or log)[-1800:]}
+    traces = [json.loads(line.removeprefix("STUDIO_TRACE ")) for line in log.splitlines()
+              if line.startswith("STUDIO_TRACE ")]
+    if traces:
+        context["failed_interactions"] = traces
     if evidence:
         context["reproduction"] = evidence
         if (previous_evidence and all(previous_evidence.get(key) == evidence.get(key)
@@ -767,6 +771,7 @@ def deploy_candidate(ai, plan, task, baseline, qa, progress, groq_step_two=False
             # Ignore volatile browser timings when structured observations are available.
             fingerprint = hashlib.sha256(canonical([
                 checkpoint.state["files"], qa_plan, review, evidence or log,
+                [line for line in log.splitlines() if line.startswith("STUDIO_TRACE ")],
                 "groq" if groq_developer else "gemini",
             ]).encode()).hexdigest()
             require(fingerprint not in checkpoint.state.get("rejected_repairs", []),
@@ -845,7 +850,10 @@ def run_qa(assets, plan):
             raise Stop("브라우저 QA 시간 초과. 후보를 보존하고 실행 환경을 점검하세요.") from None
         require(result.returncode != 125, "격리 QA 컨테이너 실행 실패")
         output = (result.stdout + result.stderr).decode(errors="replace")
-        log = output[-5000:]
+        lines = output.splitlines(keepends=True)
+        traces = [line for line in lines if line.startswith("STUDIO_TRACE ") and len(line) <= 1800]
+        log = "".join(line for line in lines if not line.startswith("STUDIO_TRACE "))[-5000:]
+        log = "".join(traces[:8]) + log
         if result.returncode and not any(row.startswith("STUDIO_EVIDENCE ") for row in log.splitlines()):
             first = next((row for row in output.splitlines() if row.startswith("STUDIO_EVIDENCE ")), "")
             if first and len(first) <= 6000:
