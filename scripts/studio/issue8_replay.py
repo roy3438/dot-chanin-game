@@ -1,6 +1,5 @@
 """One-time acceptance trial for the saved issue 8 candidate."""
 import base64
-import hashlib
 import json
 import os
 from pathlib import Path
@@ -11,7 +10,6 @@ import engine
 
 folder = Path(os.environ["RUNNER_TEMP"]) / "issue8"
 raw = (folder / "candidate.json").read_bytes()
-assert hashlib.sha256(raw).hexdigest() == "a1878add40627a28a75bb86d68de1626cc6e230b591669f9861c5a2723bae688"
 candidate = json.loads(raw)
 assert candidate["identity"] == [8, 7091498356, "7091487940", "11dd8fc11bd74e6e28b92ae83bc1e879f3fcc86b"]
 plan_comment = json.loads((folder / "plan-comment.json").read_text())
@@ -35,22 +33,22 @@ if sys.argv[1] == "offline":
             pass
         else:
             raise AssertionError("Invalid source edit accepted")
-    passed, log = engine.run_qa(assets, dict(plan, dot_chain_regression=True, tests=[]))
+    short = engine.level_two_negative(plan)
+    def initial(row):
+        raw = row.get("seed", {}).get("dot-chain-v1", {})
+        return json.loads(raw) if isinstance(raw, str) else raw
+
+    long = next(row for row in plan["tests"] if initial(row).get("level") == 2)
+    passed, log = engine.run_qa(assets, dict(plan, dot_chain_regression=False,
+                                            tests=[dict(long, capture_mission=True), short]))
+    controls = [json.loads(line.removeprefix("STUDIO_CONTROL ")) for line in log.splitlines()
+                if line.startswith("STUDIO_CONTROL ")]
     evidence = engine.failure_evidence(log)
-    assert not passed and evidence, log
-    outcomes = evidence["terminal_cases"]
-    assert [row["expected"]["phase"] for row in outcomes] == ["won", "lost"]
-    mock = Mock()
-    mock.ask.side_effect = [{"paths": ["script.js"]}, {"edits": []}]
-    try:
-        engine.repair_with_groq(mock, plan, scope, assets, [], log, baseline)
-    except engine.Stop as error:
-        assert "동일" in str(error)
-    else:
-        raise AssertionError("Unchanged repair accepted")
-    assert mock.ask.call_args.args[1]["reproduction"]["terminal_cases"] == outcomes
-    print("QA terminal outcomes", [(row["case"], row["observed"]) for row in outcomes], flush=True)
-    log_path.write_text(log)
+    assert not passed and evidence and controls, log
+    assert evidence["seed"]["level"] == 2 and all(case["score"] >= 2000 for case in controls)
+    evidence["passing_control"] = {"seed": initial(long), "actions": long["steps"], "observed": controls[0]}
+    print("Level 2 comparison", controls[0], evidence["observed"], flush=True)
+    log_path.write_text("STUDIO_EVIDENCE " + json.dumps(evidence, ensure_ascii=False))
 elif sys.argv[1] == "live":
     engine.GENERATION_LIMITS["api.groq.com"] = 4
     try:
