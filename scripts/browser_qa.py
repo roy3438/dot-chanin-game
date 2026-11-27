@@ -5,7 +5,7 @@ import json
 import pathlib
 import threading
 import traceback
-from playwright.sync_api import sync_playwright
+from playwright.sync_api import TimeoutError as BrowserTimeout, sync_playwright
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 EVIDENCE = ROOT / "qa-evidence"
@@ -60,7 +60,48 @@ def gesture(page):
         arg=[KEY, previous_moves], timeout=5000
     )
 
-def run_case(browser, label, viewport, touch):
+def comparison_inputs(seed, scenarios, storage_key):
+    """Use the nearest approved saved state and vary one previously absent field."""
+    candidates = []
+    for test in scenarios:
+        value = test.get("seed", {}).get(storage_key)
+        if isinstance(value, str):
+            try:
+                value = json.loads(value)
+            except ValueError:
+                continue
+        if not isinstance(value, dict) or not seed.keys() <= value.keys():
+            continue
+        additions = {key: item for key, item in value.items() if key not in seed}
+        if additions:
+            distance = sum(seed[key] != value[key] for key in seed)
+            candidates.append((distance, additions, test["name"]))
+    if not candidates:
+        return []
+    _, additions, source = min(candidates, key=lambda item: item[0])
+    return [(key, value, source) for key, value in sorted(additions.items())[:6]]
+
+
+def compare_inputs(browser, viewport, touch, seed, expected, scenarios):
+    results = []
+    for key, value, source in comparison_inputs(seed, scenarios, KEY):
+        context = browser.new_context(viewport=viewport, has_touch=touch, is_mobile=touch)
+        try:
+            page = context.new_page()
+            page.set_default_timeout(4000)
+            put_state(page, {**seed, key: value})
+            gesture(page)
+            state = read_state(page)
+            results.append({"added": {key: value}, "approved_case": source,
+                            "observed": {field: state.get(field) for field in expected}})
+        except (AssertionError, BrowserTimeout) as error:
+            results.append({"added": {key: value}, "approved_case": source, "error": str(error)[:180]})
+        finally:
+            context.close()
+    return results
+
+
+def run_case(browser, label, viewport, touch, probe_only=False, scenarios=(), verify_fields=()):
     context = browser.new_context(
         viewport=viewport, has_touch=touch, is_mobile=touch,
         device_scale_factor=1,
@@ -80,10 +121,27 @@ def run_case(browser, label, viewport, touch):
         ), "Horizontal overflow"
 
         # Seed a valid deterministic board to avoid random test outcomes.
-        put_state(page, saved_state())
+        seed = saved_state()
+        put_state(page, seed)
         gesture(page)
         state = read_state(page)
-        assert state["score"] == 40, f"Expected 40 points, got {state['score']}"
+        observed = {key: state.get(key) for key in ("score", "moves", "phase", "level")}
+        expected = {"score": 40, "moves": 19}
+        failed = any(observed[key] != value for key, value in expected.items())
+        if failed or verify_fields:
+            comparisons = compare_inputs(browser, viewport, touch, seed, expected, scenarios)
+            evidence = {"case": "two_adjacent_dots", "device": label, "seed": seed,
+                        "action": "drag cell 0 to adjacent cell 1", "expected": expected,
+                        "observed": observed, "comparisons": comparisons}
+            print("STUDIO_EVIDENCE " + json.dumps(evidence, ensure_ascii=False, separators=(",", ":")), flush=True)
+            if failed:
+                raise AssertionError(f"Expected {expected}, observed {observed}")
+            for field in verify_fields:
+                assert any(field in row["added"] and row.get("observed") == expected for row in comparisons), (
+                    f"Comparative regression failed for {field}")
+        if probe_only:
+            print(f"PASS {label}: two adjacent dots, moves={state['moves']} score={state['score']}", flush=True)
+            return
         assert state["moves"] == 19
         assert page.locator("#score").inner_text() == "40"
         assert page.locator("#moves").inner_text() == "19"
@@ -97,35 +155,34 @@ def run_case(browser, label, viewport, touch):
         assert read_state(page)["score"] == 0
         assert read_state(page)["moves"] == 20
 
-        # A two-dot chain awards 40, crossing the 2,000-point win goal.
+        outcomes = []
+        for seed, phase, title in ((saved_state(score=1980), "won", "승리!"),
+                                   (saved_state(moves=1), "lost", "패배")):
+            put_state(page, seed)
+            gesture(page)
+            state = read_state(page)
+            expected = {"phase": phase, "score": seed["score"] + 40, "moves": seed["moves"] - 1,
+                        "visible": True, "title": title}
+            observed = {key: state.get(key) for key in ("phase", "score", "moves")}
+            observed.update(visible=page.locator("#result").is_visible(),
+                            title=page.locator("#result-title").text_content(timeout=2500))
+            outcomes.append({"case": phase, "seed": seed, "expected": expected, "observed": observed})
+        failures = [case for case in outcomes if case["expected"] != case["observed"]]
+        if failures:
+            evidence = dict(failures[0], device=label, action="drag cell 0 to adjacent cell 1",
+                            terminal_cases=outcomes)
+            print("STUDIO_EVIDENCE " + json.dumps(evidence, ensure_ascii=False, separators=(",", ":")), flush=True)
+            raise AssertionError("Terminal state mismatch: " + ", ".join(case["case"] for case in failures))
+        print(f"PASS {label}: saved and visible win/loss outcomes", flush=True)
         put_state(page, saved_state(score=1980))
         gesture(page)
-        assert read_state(page)["phase"] == "won"
-        assert page.locator("#result").is_visible()
-        assert page.locator("#result-title").inner_text() == "승리!"
         page.locator("#restart").click()
         assert read_state(page)["phase"] == "playing"
-
-        # Exhaust the last move below the target.
-        put_state(page, saved_state(score=0, moves=1))
-        # Wait for move 1 -> 0 instead of the default gesture wait condition.
-        first = page.locator(".cell").nth(0).bounding_box()
-        second = page.locator(".cell").nth(1).bounding_box()
-        a = (first["x"] + first["width"]/2, first["y"] + first["height"]/2)
-        b = (second["x"] + second["width"]/2, second["y"] + second["height"]/2)
-        page.mouse.move(*a)
-        page.mouse.down()
-        page.mouse.move(*b, steps=5)
-        page.mouse.up()
-        page.wait_for_function(
-            "key => JSON.parse(localStorage.getItem(key)).moves === 0",
-            arg=KEY, timeout=5000,
-        )
-        assert read_state(page)["phase"] == "lost"
-        assert page.locator("#result-title").inner_text() == "패배"
         assert not errors, f"Browser JavaScript errors: {errors}"
         print(f"PASS: {label}")
     except Exception:
+        if errors:
+            print("STUDIO_PAGE_ERRORS " + json.dumps(errors[:3], ensure_ascii=False)[:600], flush=True)
         EVIDENCE.mkdir(parents=True, exist_ok=True)
         page.screenshot(path=str(EVIDENCE / f"{label}.png"), full_page=True)
         (EVIDENCE / f"{label}.txt").write_text(

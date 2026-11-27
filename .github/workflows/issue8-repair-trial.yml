@@ -1,0 +1,72 @@
+name: Issue 8 bounded repair trial
+on:
+  pull_request:
+    types: [synchronize]
+permissions:
+  contents: read
+  actions: read
+  issues: read
+jobs:
+  replay:
+    if: >-
+      github.run_attempt == 1 && github.event.before == '2793fc302e83b0aa03fa990228189010a003f99a' &&
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      github.head_ref == 'studio/repair-from-evidence' &&
+      github.event.pull_request.user.login == github.repository_owner
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    env:
+      REVISION: 379e9caafa14b184e179bbbdce335c1fd576d6c6
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+      - name: Read exact game revision
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir "$RUNNER_TEMP/candidate"
+          for file in index.html script.js style.css; do
+            gh api -H 'Accept: application/vnd.github.raw+json' "repos/$GITHUB_REPOSITORY/contents/$file?ref=$REVISION" > "$RUNNER_TEMP/candidate/$file"
+          done
+          gh api "repos/$GITHUB_REPOSITORY/issues/comments/7091487940" > "$RUNNER_TEMP/plan.json"
+          gh api "repos/$GITHUB_REPOSITORY/actions/artifacts/15181986163/zip" > "$RUNNER_TEMP/generated.zip"
+          echo "02a13b8607b8c2bbec19abfc2bb633860db7811d72fb1c8349d48b790ed674b9  $RUNNER_TEMP/generated.zip" | sha256sum -c -
+          unzip -p "$RUNNER_TEMP/generated.zip" script.js > "$RUNNER_TEMP/generated.js"
+          gh api -H 'Accept: application/vnd.github.raw+json' "repos/$GITHUB_REPOSITORY/contents/script.js?ref=394866e4e11fa5c84cf2c403c762f267496ad1c5" > "$RUNNER_TEMP/verified.js"
+      - name: Replay rejected and verified responses through normal repair
+        run: |
+          python3 scripts/studio/test_resume.py
+          PYTHONPATH=scripts/studio python3 - <<'PY'
+          import base64, engine, json, os
+          from pathlib import Path
+          from unittest.mock import Mock, patch
+          temp = Path(os.environ["RUNNER_TEMP"])
+          comment = json.loads((temp / "plan.json").read_text())
+          assert comment["id"] == 7091487940 and comment["user"]["login"] == engine.BOT
+          task = json.loads(base64.b64decode(comment["body"].split("\n    studio-data ")[-1], validate=True))
+          plan = task["plan"]
+          scope = {name:op for step in plan["steps"] for name,op in step["files"].items()}
+          files = {file.name:file.read_bytes() for file in (temp / "candidate").iterdir()}
+          _, baseline = engine.snapshot()
+          for kind in ("generated", "verified"):
+              checkpoint = engine.Checkpoint(temp / kind, [kind])
+              checkpoint.save(files, scope, len(plan["steps"]), 0, [])
+              fake = Mock()
+              body = (temp / (kind + ".js")).read_text()
+              fake.ask.return_value = {"files":{"script.js":body}}
+              with patch.object(engine, "request", side_effect=AssertionError("network provider request")):
+                  try:
+                      assets, _, repairs = engine.deploy_candidate(fake, plan, task["task"], baseline,
+                          engine.run_qa, print, checkpoint=checkpoint)
+                  except engine.RejectedRepair as err:
+                      assert kind == "generated", str(err)
+                      report = json.loads(checkpoint.file.with_name("last-rejection.json").read_text())
+                      assert all(name in report["reason"] for name in ("handleSelection", "clearDots", "restoreGame")), report
+                      assert checkpoint.state["files"]["script.js"] == files["script.js"].decode()
+                      print(report["reason"], flush=True)
+                  else:
+                      assert kind == "verified" and repairs == 1 and assets["script.js"] == body.encode()
+              assert fake.ask.call_count == 1
+          print("Verified archived rejection, checkpoint retention, and promotion of verified fixture. Provider requests: 0.")
+          PY

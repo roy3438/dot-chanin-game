@@ -88,7 +88,7 @@ def execute(page, action, touch):
     elif kind == "playing-after-short-chain":
         page.wait_for_function("""() => {
             const state = JSON.parse(localStorage.getItem('dot-chain-v1'));
-            return state && state.moves === 4 && state.score >= 2000 && state.phase === 'playing'
+            return state && state.moves === 4 && state.score === 2020 && state.phase === 'playing'
                 && state.missionProgress?.longChain === false;
         }""", timeout=2500)
         expect(page.locator("#result")).to_be_hidden()
@@ -96,6 +96,14 @@ def execute(page, action, touch):
         page.reload(wait_until="load")
     else:
         raise AssertionError("Invalid browser action")
+
+
+def mission_observation(page):
+    return page.evaluate("""() => {
+        const s = JSON.parse(localStorage.getItem('dot-chain-v1')) || {};
+        return {score:s.score, moves:s.moves, phase:s.phase, level:s.level,
+                missionProgress:s.missionProgress, title:document.querySelector('#result-title')?.textContent};
+    }""")
 
 
 def run_case(browser, origin, entry, scenario, viewport, touch):
@@ -114,6 +122,19 @@ def run_case(browser, origin, entry, scenario, viewport, touch):
     context.route("**/*", route_request)
     context.route_web_socket("**/*", lambda socket: socket.close())
     page = context.new_page()
+    page.add_init_script("""(() => {
+        const events = [];
+        window.__studioInput = events;
+        for (const type of ['pointerdown', 'pointerup', 'pointercancel', 'click']) {
+            document.addEventListener(type, event => {
+                if (!event.isTrusted) return;
+                const target = event.target.closest?.('button, [data-pos], [id]');
+                events.push([type, target?.id || target?.getAttribute('data-pos') || '']);
+                if (events.length > 8) events.shift();
+            }, {capture:true, passive:true});
+        }
+    })()""")
+    interactions = []
     page.set_default_timeout(2500)
     page.on("pageerror", lambda error: problems.append(f"JavaScript: {error}"))
     page.on("response", lambda response: problems.append(f"HTTP {response.status}: {response.url}")
@@ -137,15 +158,34 @@ def run_case(browser, origin, entry, scenario, viewport, touch):
         for index, action in enumerate(scenario["steps"], 1):
             try:
                 execute(page, action, touch)
+                if action["do"] in ("drag", "click") and scenario.get("seed", {}).get("dot-chain-v1"):
+                    interactions.append({"step": index, "input": page.evaluate("window.__studioInput.slice(-4)"),
+                                         "state": mission_observation(page)})
             except (AssertionError, BrowserTimeout) as error:
+                if interactions:
+                    row = {"case": scenario["name"], "device": "mobile" if touch else "desktop",
+                           "step": index, "assertion": action, "after_input": interactions[-2:],
+                           "at_failure": mission_observation(page)}
+                    print("STUDIO_TRACE " + json.dumps(row, ensure_ascii=False, separators=(",", ":")), flush=True)
+                if action["do"] == "playing-after-short-chain":
+                    state = mission_observation(page)
+                    initial = scenario["seed"]["dot-chain-v1"]
+                    evidence = {"case": scenario["name"], "device": "mobile" if touch else "desktop",
+                                "action": scenario["steps"][0], "seed": initial,
+                                "expected": {"score": initial["score"] + 40, "moves": initial["moves"] - 1,
+                                             "phase": "playing", "missionProgress": {"longChain": False}},
+                                "observed": state}
+                    print("STUDIO_EVIDENCE " + json.dumps(evidence, separators=(",", ":")), flush=True)
                 raise AssertionError(f"Step {index} ({action['do']}): {error}") from None
         assert page.evaluate("document.documentElement.scrollWidth <= innerWidth + 1"), "Horizontal overflow"
         assert not problems, str(problems[:5])
+        if scenario.get("capture_mission"):
+            print("STUDIO_CONTROL " + json.dumps(mission_observation(page)), flush=True)
     finally:
         context.close()
 
 
-def baseline_suite(browser, root, port):
+def baseline_suite(browser, root, port, plan):
     path = Path("/dot_qa.py")
     if not path.exists():
         path = Path(__file__).resolve().parents[1] / "browser_qa.py"
@@ -161,7 +201,8 @@ def baseline_suite(browser, root, port):
     suite.PORT = port
     for device, viewport, touch in VIEWPORTS:
         try:
-            suite.run_case(browser, device, viewport, touch)
+            suite.run_case(browser, device, viewport, touch, probe_only=plan.get("probe_only", False),
+                           scenarios=plan["tests"], verify_fields=plan.get("verify_fields", []))
         except (AssertionError, BrowserTimeout) as error:
             raise AssertionError(f"STUDIO_QA_CASE_FAILURE {device} / 기존 DOT CHAIN 회귀 시험: {error}") from error
 
@@ -184,10 +225,10 @@ def run(root, plan):
                     raise
                 try:
                     if plan["dot_chain_regression"]:
-                        baseline_suite(browser, root, port)
+                        baseline_suite(browser, root, port, plan)
                     failures = []
                     for device, viewport, touch in VIEWPORTS:
-                        for scenario in plan["tests"]:
+                        for scenario in ([] if plan.get("probe_only") else plan["tests"]):
                             label = f"{device} / {scenario['name']}"
                             try:
                                 run_case(browser, origin, plan["entry"], scenario, viewport, touch)

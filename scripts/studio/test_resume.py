@@ -59,6 +59,43 @@ class RetryTests(unittest.TestCase):
                 engine.Groq().ask("fixture", data, 100)
             network.assert_called_once()
 
+    def test_repair_gate_uses_same_case_and_keeps_regression(self):
+        evidence = {"case": "short"}
+        plan = {"tests": [{"name": "long"}, {"name": "short"}], "dot_chain_regression": True}
+        qa = Mock(return_value=(True, "PASS"))
+        engine.verify_repair(qa, {"game.js": b"candidate"}, plan, evidence)
+        self.assertEqual(qa.call_args.args[1], {"tests": [{"name": "short"}], "dot_chain_regression": True})
+        self.assertEqual(len(plan["tests"]), 2)
+        qa.return_value = False, "legacy drag failed"
+        with self.assertRaisesRegex(engine.Stop, "기존 후보 유지"):
+            engine.verify_repair(qa, {}, plan, evidence)
+
+    def test_restored_rejected_repair_skips_provider_until_evidence_changes(self):
+        scope = {"index.html": "write"}
+        plan = {"steps": [{"files": scope}], "mode": "update-game", "tests": []}
+        base = {"index.html": b"old"}
+        ai = Mock()
+        ai.ask.return_value = {"files": {"index.html": "ineffective"}}
+        with tempfile.TemporaryDirectory() as folder:
+            checkpoint = engine.Checkpoint(folder, ["trial"])
+            checkpoint.save(base, scope, 1, 0, [])
+            def resume(log):
+                restored = engine.Checkpoint(folder, ["trial"])
+                qa = Mock(return_value=(False, log))
+                engine.deploy_candidate(ai, plan, "", base, qa, lambda *_: None, checkpoint=restored)
+
+            with self.assertRaises(engine.RejectedRepair):
+                resume("failed case A")
+            self.assertEqual(ai.ask.call_count, 1)
+            with self.assertRaisesRegex(engine.Stop, "재호출을 중단"):
+                resume("failed case A")
+            self.assertEqual(ai.ask.call_count, 1)
+            with self.assertRaises(engine.RejectedRepair):
+                resume("failed case B")
+            self.assertEqual(ai.ask.call_count, 2)
+            restored = engine.Checkpoint(folder, ["trial"])
+            self.assertEqual(restored.state["files"], {"index.html": "old"})
+
     def test_level_two_short_chain_is_independent(self):
         original = {"level": 2, "score": 1900, "moves": 5, "missionProgress": {"longChain": False}}
         plan = {"tests": [{"seed": {"dot-chain-v1": json.dumps(original)}}]}
