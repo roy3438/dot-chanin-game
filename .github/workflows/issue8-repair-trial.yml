@@ -9,18 +9,14 @@ permissions:
 jobs:
   replay:
     if: >-
-      github.run_attempt == 1 && github.event.before == 'e64bb5ee27f84fc657e6cb3508f8fb3608185e1f' &&
+      github.run_attempt == 1 && github.event.before == 'aa0e4a7ccacc01f169e99e50af5892f2cd229d86' &&
       github.event.pull_request.head.repo.full_name == github.repository &&
       github.head_ref == 'studio/repair-from-evidence' &&
       github.event.pull_request.user.login == github.repository_owner
-    permissions:
-      contents: write
-      issues: read
     runs-on: ubuntu-24.04
     timeout-minutes: 12
     env:
       REVISION: 379e9caafa14b184e179bbbdce335c1fd576d6c6
-      GAME_BRANCH: studio/independent-8-45837161210
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
         with:
@@ -37,64 +33,40 @@ jobs:
           gh api "repos/$GITHUB_REPOSITORY/actions/artifacts/15181986163/zip" > "$RUNNER_TEMP/generated.zip"
           echo "02a13b8607b8c2bbec19abfc2bb633860db7811d72fb1c8349d48b790ed674b9  $RUNNER_TEMP/generated.zip" | sha256sum -c -
           unzip -p "$RUNNER_TEMP/generated.zip" script.js > "$RUNNER_TEMP/generated.js"
-      - name: Integrate saved model blocks and verify all cases
+          gh api -H 'Accept: application/vnd.github.raw+json' "repos/$GITHUB_REPOSITORY/contents/script.js?ref=394866e4e11fa5c84cf2c403c762f267496ad1c5" > "$RUNNER_TEMP/verified.js"
+      - name: Replay rejected and verified responses through normal repair
         run: |
+          python3 scripts/studio/test_resume.py
           PYTHONPATH=scripts/studio python3 - <<'PY'
           import base64, engine, json, os
           from pathlib import Path
+          from unittest.mock import Mock, patch
           temp = Path(os.environ["RUNNER_TEMP"])
           comment = json.loads((temp / "plan.json").read_text())
           assert comment["id"] == 7091487940 and comment["user"]["login"] == engine.BOT
-          plan = json.loads(base64.b64decode(comment["body"].split("\n    studio-data ")[-1], validate=True))["plan"]
-          assets = {file.name:file.read_bytes() for file in (temp / "candidate").iterdir()}
-          tests = [*plan["tests"], engine.level_two_negative(plan), *engine.level_continuity_cases()]
-          full = dict(plan, tests=tests, dot_chain_regression=True)
-          old = assets["script.js"].decode()
-          import re
-          generated = (temp / "generated.js").read_text()
-          new_game = generated[generated.index("function startNewGame("):generated.index("  function randomizeBoard(")]
-          gravity = generated[generated.index("function applyGravity("):generated.index("  function clearSelection(")]
-          restore = generated[generated.index("function restoreGame("):generated.rindex("})();")]
-          patched = old[:old.index("  function startNewGame(")] + new_game + old[old.index("  function randomizeBoard("):]
-          start = patched.index("    const chainLen = selected.length;")
-          end = patched.index("    // Decrease move counter", start)
-          scoring = patched[start:end]
-          # Retain the previously verified score and missions and invoke removal once for every valid chain.
-          scoring, calls = re.subn(r"(?m)^ *clearDots\(selected\);\n", "", scoring)
-          assert calls == 3
-          scoring = re.sub(r"(?m)^ *?(?:let cleared = false|cleared = true);\n", "", scoring)
-          patched = patched[:start] + scoring + "    clearDots(selected);\n" + patched[end:]
-          start = patched.index("  function clearDots(")
-          end = patched.index("  function clearSelection(", start)
-          patched = patched[:start] + gravity.replace("function applyGravity(", "function clearDots(", 1) + patched[end:]
-          start = patched.index('  if (state.phase === "finished")')
-          patched = patched[:start] + restore + "  restoreGame();\n})();\n"
-          assert patched != old
-          assets = engine.apply_file_response({"files":{"script.js":patched}}, {"script.js":"write"}, assets, True)
-          output = temp / "repair"
-          output.mkdir()
-          (output / "script.js").write_bytes(assets["script.js"])
-          passed, log = engine.run_qa(assets, full)
-          (output / "qa.log").write_text(log, encoding="utf-8")
-          print(log, flush=True)
-          raise SystemExit(0 if passed else 1)
+          task = json.loads(base64.b64decode(comment["body"].split("\n    studio-data ")[-1], validate=True))
+          plan = task["plan"]
+          scope = {name:op for step in plan["steps"] for name,op in step["files"].items()}
+          files = {file.name:file.read_bytes() for file in (temp / "candidate").iterdir()}
+          _, baseline = engine.snapshot()
+          for kind in ("generated", "verified"):
+              checkpoint = engine.Checkpoint(temp / kind, [kind])
+              checkpoint.save(files, scope, len(plan["steps"]), 0, [])
+              fake = Mock()
+              body = (temp / (kind + ".js")).read_text()
+              fake.ask.return_value = {"files":{"script.js":body}}
+              with patch.object(engine, "request", side_effect=AssertionError("network provider request")):
+                  try:
+                      assets, _, repairs = engine.deploy_candidate(fake, plan, task["task"], baseline,
+                          engine.run_qa, print, checkpoint=checkpoint)
+                  except engine.RejectedRepair as err:
+                      assert kind == "generated", str(err)
+                      report = json.loads(checkpoint.file.with_name("last-rejection.json").read_text())
+                      assert all(name in report["reason"] for name in ("handleSelection", "clearDots", "restoreGame")), report
+                      assert checkpoint.state["files"]["script.js"] == files["script.js"].decode()
+                      print(report["reason"], flush=True)
+                  else:
+                      assert kind == "verified" and repairs == 1 and assets["script.js"] == body.encode()
+              assert fake.ask.call_count == 1
+          print("Verified archived rejection, checkpoint retention, and promotion of verified fixture. Provider requests: 0.")
           PY
-      - name: Save repair evidence
-        if: always()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
-        with:
-          name: pr24-verified-repair
-          path: ${{ runner.temp }}/repair
-          if-no-files-found: ignore
-      - name: Update PR branch after full pass
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          gh auth setup-git
-          git fetch --depth=1 origin "refs/heads/$GAME_BRANCH"
-          test "$(git rev-parse FETCH_HEAD)" = "$REVISION"
-          git switch --detach FETCH_HEAD
-          cp "$RUNNER_TEMP/repair/script.js" script.js
-          git add -- script.js
-          git -c user.name=github-actions -c user.email=41898282+github-actions[bot]@users.noreply.github.com commit -m 'Repair DOT CHAIN board and save continuity'
-          git push origin "HEAD:refs/heads/$GAME_BRANCH"
