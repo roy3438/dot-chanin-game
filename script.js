@@ -161,18 +161,31 @@
   // -----------------------------------------------------------------
   // Game flow: start / new / finish
   // -----------------------------------------------------------------
-  function startNewGame() {
-    state = defaultState();
-    state.level = 1;
-    state.unlocked = 1;
-    randomizeBoard();
-    generateMission();
-    state.phase = "playing";
-    state.moves = 20;
-    saveState();
-    renderBoard();
-    updateUI();
-  }
+function startNewGame() {
+  // Preserve mute, best score and unlocked level from the previous session
+  const prevMute = state ? state.mute : false;
+  const prevBest = state ? state.best : 0;
+  const prevUnlocked = state ? state.unlocked : 1;
+
+  // Initialise a fresh state
+  state = defaultState();
+  state.mute = prevMute;
+  state.best = prevBest;
+  state.unlocked = prevUnlocked;
+  state.level = 1;
+  state.unlocked = Math.max(state.unlocked, 1);
+  randomizeBoard();
+  generateMission();
+  state.phase = "playing";
+  state.moves = 20;
+
+  // Hide the result overlay before rendering the new board
+  if (typeof $result !== 'undefined') $result.classList.add('hidden');
+
+  saveState();
+  renderBoard();
+  updateUI();
+}
 
   function randomizeBoard() {
     const colors = [];
@@ -254,20 +267,15 @@ function finishGame(victory) {
     }
 
     const chainLen = selected.length;
-let cleared = false;
 const base = 10 * chainLen * chainLen;
 addScore(base, 0, 0);
 if (state.level === 1) {
   // Level 1: award base points and clear the chain
-  clearDots(selected);
-  cleared = true;
 } else if (state.level === 2) {
   // Level 2: need a chain of 5+ at least once, then give bonus
   if (chainLen >= 5) {
     state.missionProgress.longChain = true;
     addScore(state.mission.bonus, 0, 0);
-    clearDots(selected);
-    cleared = true;
   }
 } else if (state.level === 3) {
   // Level 3: increment red or blue count based on the colour of the first selected dot
@@ -277,9 +285,8 @@ if (state.level === 1) {
   } else if (firstColor === 'blue') {
     state.missionProgress.blue = (state.missionProgress.blue || 0) + chainLen;
   }
-  clearDots(selected);
-  cleared = true;
 }
+    clearDots(selected);
     // Decrease move counter after any attempted chain
     state.moves--;
 
@@ -301,21 +308,33 @@ if (state.level === 1) {
     saveState();
   }
 
-  function clearDots(positions) {
-    positions.forEach(pos => {
-      const cell = cellAt(pos);
-      cell.classList.add('removing');
-      setTimeout(() => {
-        // replace with new random color to keep board full
-        const newColor = COLORS[Math.floor(Math.random() * COLORS.length)];
-        state.board[pos] = newColor;
-        const dot = cell.querySelector('.dot');
-        dot.className = `dot ${newColor}`;
-        cell.classList.remove('removing');
-      }, 200);
-    });
-    sounds.clear();
+function clearDots(positions) {
+  // Build a set for quick lookup of cleared positions
+  const clearedSet = new Set(positions);
+  // For each column, compact cells toward row index 5 (zero‑based)
+  for (let col = 0; col < BOARD_SIZE; col++) {
+    // Collect the column values bottom‑up
+    const columnVals = [];
+    for (let row = BOARD_SIZE - 1; row >= 0; row--) {
+      const idx = row * BOARD_SIZE + col;
+      if (!clearedSet.has(idx)) {
+        columnVals.push(state.board[idx]);
+      }
+    }
+    // Pad the top with new random colors to keep board full
+    while (columnVals.length < BOARD_SIZE) {
+      const newColor = COLORS[Math.floor(Math.random() * COLORS.length)];
+      columnVals.push(newColor);
+    }
+    // Write back the compacted column, preserving order (bottom to top)
+    for (let row = BOARD_SIZE - 1, i = 0; row >= 0; row--, i++) {
+      const idx = row * BOARD_SIZE + col;
+      state.board[idx] = columnVals[i];
+    }
   }
+  renderBoard();
+  sounds.clear();
+}
 
   function clearSelection() {
     selected.forEach(p => cellAt(p).classList.remove('selected'));
@@ -384,10 +403,12 @@ if (state.level === 1) {
   // Restore UI from saved state
   renderBoard();
   updateUI();
-  if (state.phase === "finished") {
-    $result.classList.remove('hidden');
-    $resultTitle.textContent = state.level === 3 && state.missionProgress.red >= 6 && state.missionProgress.blue >= 6 ? "전체 클리어!" : "승리!";
-    $finalScore.textContent = state.score;
-    if (state.level < 3) $nextLevelBtn.classList.remove('hidden');
+function restoreGame() {
+  if (state.phase === "won" || state.phase === "lost") {
+    // finishGame will set the proper title, show next‑level button if applicable and persist state
+    finishGame(state.phase === "won");
   }
+}
+
+  restoreGame();
 })();
