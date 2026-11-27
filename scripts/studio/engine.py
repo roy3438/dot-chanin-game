@@ -708,7 +708,7 @@ def level_continuity_cases():
 def repair_function_hints(before, after):
     """Suggest likely missing connections only when the browser has rejected an edit."""
     hints = []
-    declaration = re.compile(r"(?m)^[ \\t]*(?:async\\s+)?function\\s+([A-Za-z_$][\\w$]*)\\s*\\(")
+    declaration = re.compile(r"(?m)^[ \t]*(?:async\s+)?function\s+([A-Za-z_$][\w$]*)\s*\(")
     for path, data in after.items():
         if not path.endswith((".js", ".mjs")) or data == before.get(path):
             continue
@@ -717,7 +717,7 @@ def repair_function_hints(before, after):
         old_names = set(declaration.findall(old))
         new_names = set(declaration.findall(new))
         # Match references (including listener callbacks) as well as calls.
-        references = set(re.findall(r"[A-Za-z_$][\\w$]*", declaration.sub("(", new)))
+        references = set(re.findall(r"[A-Za-z_$][\w$]*", declaration.sub("(", new)))
         for name in sorted((new_names - old_names) - references):
             hints.append(f"{path}: 새 함수 {name}의 참조 위치를 확인하세요.")
         for name in sorted((old_names - new_names) & references):
