@@ -9,7 +9,7 @@ permissions:
 jobs:
   replay:
     if: >-
-      github.run_attempt == 1 && github.event.before == '776c7f80f443d8300b4748f103a38ed4f796b93b' &&
+      github.run_attempt == 1 && github.event.before == 'e64bb5ee27f84fc657e6cb3508f8fb3608185e1f' &&
       github.event.pull_request.head.repo.full_name == github.repository &&
       github.head_ref == 'studio/repair-from-evidence' &&
       github.event.pull_request.user.login == github.repository_owner
@@ -34,9 +34,10 @@ jobs:
             gh api -H 'Accept: application/vnd.github.raw+json' "repos/$GITHUB_REPOSITORY/contents/$file?ref=$REVISION" > "$RUNNER_TEMP/candidate/$file"
           done
           gh api "repos/$GITHUB_REPOSITORY/issues/comments/7091487940" > "$RUNNER_TEMP/plan.json"
-      - name: Generate and verify on all cases
-        env:
-          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+          gh api "repos/$GITHUB_REPOSITORY/actions/artifacts/15181986163/zip" > "$RUNNER_TEMP/generated.zip"
+          echo "02a13b8607b8c2bbec19abfc2bb633860db7811d72fb1c8349d48b790ed674b9  $RUNNER_TEMP/generated.zip" | sha256sum -c -
+          unzip -p "$RUNNER_TEMP/generated.zip" script.js > "$RUNNER_TEMP/generated.js"
+      - name: Integrate saved model blocks and verify all cases
         run: |
           PYTHONPATH=scripts/studio python3 - <<'PY'
           import base64, engine, json, os
@@ -49,38 +50,25 @@ jobs:
           tests = [*plan["tests"], engine.level_two_negative(plan), *engine.level_continuity_cases()]
           full = dict(plan, tests=tests, dot_chain_regression=True)
           old = assets["script.js"].decode()
-          engine.GENERATION_LIMITS["api.groq.com"] = 1
-          starts = ["  function startNewGame(", "    const chainLen = selected.length;",
-                    "  function clearDots(", '  if (state.phase === "finished")']
-          ends = ["  function randomizeBoard(", "    // Decrease move counter",
-                  "  function clearSelection(", "})();"]
-          names = ["new_game", "score_and_clear", "gravity", "restore"]
-          ranges = {name:(old.index(start), old.index(end, old.index(start)))
-                    for name,start,end in zip(names, starts, ends)}
-          schema = {"type":"object","properties":{key:{"type":"string"} for key in names},
-                    "required":names,"additionalProperties":False}
-          context = {key:old[start:end] for key,(start,end) in ranges.items()}
-          result = engine.Groq().ask(
-              "Replace each of the four supplied blocks completely, returning one JavaScript string per field. "
-              "The blocks are pasted into the original file. Keep surrounding code and identifiers compatible. "
-              "Every field must implement its named change. No Markdown.",
-              {"blocks":context,"browser_result":
-               "new_game: preserve prior mute, best and unlocked; hide the result before render and save. "
-               "score_and_clear: retain level bonuses, cumulative progress and base score; call clearDots "
-               "exactly once outside the level branches, including a short chain. "
-               "gravity: synchronously compact each affected column toward row 5 excluding selected indices, "
-               "fill from top with random COLORS, update state.board and call renderBoard and sounds.clear. "
-               "Caller saves after this returns; no timer or clearing selected array here. "
-               "restore: if phase is won or lost call finishGame(state.phase === 'won'); this helper "
-               "displays correct title, next availability and saves. Preserve indentation.",
-               "available":"state, selected, COLORS, BOARD_SIZE, renderBoard(), sounds.clear(), finishGame(victory), "
-               "saveState(), updateUI(), generateMission(), clearDots(positions), addScore(delta, 0, 0), $result"},
-              3800, schema=schema)
-          patched = old
-          for key,(start,end) in sorted(ranges.items(), key=lambda item:item[1][0], reverse=True):
-              replacement = result[key]
-              assert replacement.strip() and replacement.strip() != old[start:end].strip(), key
-              patched = patched[:start] + replacement.rstrip() + "\n\n" + patched[end:]
+          import re
+          generated = (temp / "generated.js").read_text()
+          new_game = generated[generated.index("function startNewGame("):generated.index("  function randomizeBoard(")]
+          gravity = generated[generated.index("function applyGravity("):generated.index("  function clearSelection(")]
+          restore = generated[generated.index("function restoreGame("):generated.rindex("})();")]
+          patched = old[:old.index("  function startNewGame(")] + new_game + old[old.index("  function randomizeBoard("):]
+          start = patched.index("    const chainLen = selected.length;")
+          end = patched.index("    // Decrease move counter", start)
+          scoring = patched[start:end]
+          # Retain the previously verified score and missions and invoke removal once for every valid chain.
+          scoring, calls = re.subn(r"(?m)^ *clearDots\(selected\);\n", "", scoring)
+          assert calls == 3
+          scoring = re.sub(r"(?m)^ *?(?:let cleared = false|cleared = true);\n", "", scoring)
+          patched = patched[:start] + scoring + "    clearDots(selected);\n" + patched[end:]
+          start = patched.index("  function clearDots(")
+          end = patched.index("  function clearSelection(", start)
+          patched = patched[:start] + gravity.replace("function applyGravity(", "function clearDots(", 1) + patched[end:]
+          start = patched.index('  if (state.phase === "finished")')
+          patched = patched[:start] + restore + "  restoreGame();\n})();\n"
           assert patched != old
           assets = engine.apply_file_response({"files":{"script.js":patched}}, {"script.js":"write"}, assets, True)
           output = temp / "repair"
