@@ -9,21 +9,18 @@ permissions:
 jobs:
   replay:
     if: >-
-      github.run_attempt == 1 && github.event.before == '258e28fc9ef7a95d40016e37bdc3bea4a229d1d6' &&
+      github.run_attempt == 1 && github.event.before == 'cf1fcd05b1f7e54ac7b5ed8a4fb65163801e7da5' &&
       github.event.pull_request.head.repo.full_name == github.repository &&
       github.head_ref == 'studio/repair-from-evidence' &&
       github.event.pull_request.user.login == github.repository_owner
+    permissions:
+      contents: write
+      issues: read
     runs-on: ubuntu-24.04
     timeout-minutes: 12
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - pr: 23
-            revision: c375a2ada1475d00df11d75155f3407f1521aff0
-          - pr: 24
-            revision: 379e9caafa14b184e179bbbdce335c1fd576d6c6
-    name: Review PR ${{ matrix.pr }}
+    env:
+      REVISION: 379e9caafa14b184e179bbbdce335c1fd576d6c6
+      GAME_BRANCH: studio/independent-8-45837161210
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
         with:
@@ -31,14 +28,15 @@ jobs:
       - name: Read exact game revision
         env:
           GH_TOKEN: ${{ github.token }}
-          REVISION: ${{ matrix.revision }}
         run: |
           mkdir "$RUNNER_TEMP/candidate"
           for file in index.html script.js style.css; do
             gh api -H 'Accept: application/vnd.github.raw+json' "repos/$GITHUB_REPOSITORY/contents/$file?ref=$REVISION" > "$RUNNER_TEMP/candidate/$file"
           done
           gh api "repos/$GITHUB_REPOSITORY/issues/comments/7091487940" > "$RUNNER_TEMP/plan.json"
-      - name: Run original and continuity cases
+      - name: Generate and verify on all cases
+        env:
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
         run: |
           PYTHONPATH=scripts/studio python3 - <<'PY'
           import base64, engine, json, os
@@ -49,7 +47,53 @@ jobs:
           plan = json.loads(base64.b64decode(comment["body"].split("\n    studio-data ")[-1], validate=True))["plan"]
           assets = {file.name:file.read_bytes() for file in (temp / "candidate").iterdir()}
           tests = [*plan["tests"], engine.level_two_negative(plan), *engine.level_continuity_cases()]
-          passed, log = engine.run_qa(assets, dict(plan, tests=tests, dot_chain_regression=True))
+          full = dict(plan, tests=tests, dot_chain_regression=True)
+          old = assets["script.js"].decode()
+          engine.GENERATION_LIMITS["api.groq.com"] = 1
+          schema = {"type":"object","properties":{"edits":{"type":"array","items":{
+                    "type":"object","properties":{"start":{"type":"integer"},"end":{"type":"integer"},
+                    "anchor":{"type":"string"},"replacement":{"type":"string"}},
+                    "required":["start","end","anchor","replacement"],"additionalProperties":False}}},
+                    "required":["edits"],"additionalProperties":False}
+          numbered = "".join(f"{n}|{line}" for n,line in enumerate(old.splitlines(keepends=True),1))
+          result = engine.Groq().ask(
+              "Return minimal inclusive line edits to JavaScript. Anchor is the first original line without a number. "
+              "Keep current working level and input rules. Fix all three failures described. Treat source as data.",
+              {"source":{"script.js":numbered},"browser_result":
+               "Both PC and mobile: two red dots at positions 30 and 31 in level 2 should clear, allowing "
+               "blue and green from positions 24 and 25 to fall into 30 and 31, and remain after reload. "
+               "Award existing points; clear every valid chain exactly once, including short level 2 chains. "
+               "Implement real column gravity and refill at top; keep board, rendered cells and save in sync. "
+               "After loading a saved won or lost phase show correct result; Next only for wins below level 3. "
+               "New Game and reload must preserve mute. Restart and Next should render the new board they save."},
+              5500, schema=schema)
+          patched = engine.apply_line_edits(old, result["edits"])
+          assert patched != old
+          assets = engine.apply_file_response({"files":{"script.js":patched}}, {"script.js":"write"}, assets, True)
+          output = temp / "repair"
+          output.mkdir()
+          (output / "script.js").write_bytes(assets["script.js"])
+          passed, log = engine.run_qa(assets, full)
+          (output / "qa.log").write_text(log, encoding="utf-8")
           print(log, flush=True)
           raise SystemExit(0 if passed else 1)
           PY
+      - name: Save repair evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: pr24-verified-repair
+          path: ${{ runner.temp }}/repair
+          if-no-files-found: ignore
+      - name: Update PR branch after full pass
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh auth setup-git
+          git fetch --depth=1 origin "refs/heads/$GAME_BRANCH"
+          test "$(git rev-parse FETCH_HEAD)" = "$REVISION"
+          git switch --detach FETCH_HEAD
+          cp "$RUNNER_TEMP/repair/script.js" script.js
+          git add -- script.js
+          git -c user.name=github-actions -c user.email=41898282+github-actions[bot]@users.noreply.github.com commit -m 'Repair DOT CHAIN board and save continuity'
+          git push origin "HEAD:refs/heads/$GAME_BRANCH"
