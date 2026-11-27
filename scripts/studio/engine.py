@@ -705,6 +705,26 @@ def level_continuity_cases():
     ]
 
 
+def repair_function_hints(before, after):
+    """Suggest likely missing connections only when the browser has rejected an edit."""
+    hints = []
+    declaration = re.compile(r"(?m)^[ \\t]*(?:async\\s+)?function\\s+([A-Za-z_$][\\w$]*)\\s*\\(")
+    for path, data in after.items():
+        if not path.endswith((".js", ".mjs")) or data == before.get(path):
+            continue
+        old = before.get(path, b"").decode("utf-8")
+        new = data.decode("utf-8")
+        old_names = set(declaration.findall(old))
+        new_names = set(declaration.findall(new))
+        # Match references (including listener callbacks) as well as calls.
+        references = set(re.findall(r"[A-Za-z_$][\\w$]*", declaration.sub("(", new)))
+        for name in sorted((new_names - old_names) - references):
+            hints.append(f"{path}: 새 함수 {name}의 참조 위치를 확인하세요.")
+        for name in sorted((old_names - new_names) & references):
+            hints.append(f"{path}: 기존 함수 {name}의 선언이 사라졌지만 참조가 남았습니다.")
+    return hints[:12]
+
+
 def verify_repair(qa, proposed, plan, evidence):
     """Replay the failing case before promoting proposed files."""
     focused = plan
@@ -810,6 +830,7 @@ def deploy_candidate(ai, plan, task, baseline, qa, progress, groq_step_two=False
             require(fingerprint not in checkpoint.state.get("rejected_repairs", []),
                     "이 후보와 QA 근거로 시도한 수정은 이미 기각됐습니다. 모델 재호출을 중단합니다.")
         progress(f"QA 수정 {attempt + 1}/2")
+        proposed = None
         try:
             if groq_developer:
                 proposed = repair_with_groq(groq_developer, plan, scope, assets, review, log, baseline, prior_evidence)
@@ -822,11 +843,15 @@ def deploy_candidate(ai, plan, task, baseline, qa, progress, groq_step_two=False
                 raise RejectedRepair("자동 수정 결과가 후보와 동일합니다.")
             if not passed:
                 verify_repair(qa, proposed, qa_plan, evidence)
-        except RejectedRepair:
+        except RejectedRepair as error:
+            hints = repair_function_hints(assets, proposed) if proposed is not None else []
+            details = str(error) + ("\n" + "\n".join(hints) if hints else "")
             if checkpoint:
                 checkpoint.state["rejected_repairs"].append(fingerprint)
                 checkpoint.save(assets, scope, len(plan["steps"]), attempt, review, log)
-            raise
+                checkpoint.file.with_name("last-rejection.json").write_text(
+                    canonical({"reason": details, "fingerprint": fingerprint}), encoding="utf-8")
+            raise RejectedRepair(details) from error
         assets = proposed
         if checkpoint:
             checkpoint.save(assets, scope, len(plan["steps"]), attempt + 1, None if review else [])
