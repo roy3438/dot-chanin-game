@@ -198,24 +198,22 @@ function startNewGame() {
     state.board = colors;
   }
 
-function finishGame(victory) {
-    state.phase = victory ? 'won' : 'lost';
+  function finishGame(victory) {
+    state.phase = victory ? "won" : "lost";
+    const hasNextLevel = victory && state.level < 3;
+    const preview = document.getElementById("next-mission");
+    if (hasNextLevel) {
+      state.unlocked = Math.max(state.unlocked, state.level + 1);
+      const mission = state.level === 1
+        ? "같은 색 점 5개 이상을 한 번에 연결하세요."
+        : "빨강과 파랑 점을 각각 6개 이상 제거하세요.";
+      preview.textContent = `레벨 ${state.level} 클리어 · 레벨 ${state.level + 1} 해금 · 다음 미션: 2,000점을 얻고 ${mission}`;
+    }
+    preview.hidden = !hasNextLevel;
+    $nextLevelBtn.classList.toggle("hidden", !hasNextLevel);
     $resultTitle.textContent = victory ? (state.level === 3 ? "전체 클리어!" : "승리!") : "패배";
     $finalScore.textContent = state.score;
-    $result.classList.remove('hidden');
-    if (victory && state.level < 3) {
-      $nextLevelBtn.classList.remove('hidden');
-    } else {
-      $nextLevelBtn.classList.add('hidden');
-    }
-    saveState();
-    $finalScore.textContent = state.score;
     $result.classList.remove("hidden");
-    if (victory && state.level < 3) {
-      $nextLevelBtn.classList.remove("hidden");
-    } else {
-      $nextLevelBtn.classList.add("hidden");
-    }
     saveState();
   }
 

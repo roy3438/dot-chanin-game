@@ -1,0 +1,213 @@
+{
+  "entry": "index.html",
+  "tests": [
+    {
+      "name": "레벨1 승리 및 다음 레벨 진입 검증",
+      "seed": {
+        "dot-chain-v1": "{\"score\":1980,\"best\":1980,\"moves\":1,\"phase\":\"playing\",\"mission\":null,\"board\":[\"red\",\"red\",\"blue\",\"yellow\",\"green\",\"red\",\"blue\",\"yellow\",\"green\",\"red\",\"yellow\",\"green\",\"red\",\"blue\",\"yellow\",\"green\",\"red\",\"blue\",\"yellow\",\"green\",\"red\",\"blue\",\"yellow\",\"green\",\"red\",\"blue\",\"yellow\",\"green\",\"red\",\"blue\",\"yellow\",\"green\",\"red\",\"blue\",\"yellow\",\"green\"],\"level\":1,\"unlocked\":1,\"mute\":false,\"missionProgress\":null}"
+      },
+      "steps": [
+        {
+          "do": "visible",
+          "selector": "#board"
+        },
+        {
+          "do": "drag",
+          "selector": "[data-pos='0']",
+          "target": "[data-pos='1']"
+        },
+        {
+          "do": "text",
+          "selector": "#result-title",
+          "value": "승리!"
+        },
+        {
+          "do": "click",
+          "selector": "#next-level"
+        },
+        {
+          "do": "reload"
+        },
+        {
+          "do": "text",
+          "selector": "#level-indicator",
+          "value": "레벨 2"
+        }
+      ]
+    },
+    {
+      "name": "레벨2 긴 연결 조건 달성 승리 검증",
+      "seed": {
+        "dot-chain-v1": "{\"score\":1900,\"best\":1900,\"moves\":5,\"phase\":\"playing\",\"mission\":{\"kind\":\"length\",\"bonus\":200},\"board\":[\"red\",\"red\",\"red\",\"red\",\"red\",\"blue\",\"blue\",\"yellow\",\"green\",\"red\",\"yellow\",\"green\",\"green\",\"yellow\",\"blue\",\"blue\",\"red\",\"blue\",\"yellow\",\"green\",\"red\",\"blue\",\"yellow\",\"green\",\"red\",\"blue\",\"yellow\",\"green\",\"red\",\"blue\",\"yellow\",\"green\",\"red\",\"blue\",\"yellow\",\"green\"],\"level\":2,\"unlocked\":2,\"mute\":false,\"missionProgress\":{\"longChain\":false}}"
+      },
+      "steps": [
+        {
+          "do": "visible",
+          "selector": "#board"
+        },
+        {
+          "do": "drag",
+          "selector": "[data-pos='0']",
+          "target": "[data-pos='4']"
+        },
+        {
+          "do": "text",
+          "selector": "#result-title",
+          "value": "승리!"
+        }
+      ]
+    },
+    {
+      "name": "레벨3 빨강 6개 제거 완료 및 전체 클리어 확인 검증",
+      "seed": {
+        "dot-chain-v1": "{\"score\":1980,\"best\":1980,\"moves\":2,\"phase\":\"playing\",\"mission\":{\"kind\":\"color\",\"color\":\"red\",\"target\":6},\"board\":[\"red\",\"red\",\"blue\",\"yellow\",\"green\",\"red\",\"blue\",\"yellow\",\"green\",\"red\",\"yellow\",\"green\",\"red\",\"blue\",\"yellow\",\"green\",\"red\",\"blue\",\"yellow\",\"green\",\"red\",\"blue\",\"yellow\",\"green\",\"red\",\"blue\",\"yellow\",\"green\",\"red\",\"blue\",\"yellow\",\"green\",\"red\",\"blue\",\"yellow\",\"green\"],\"level\":3,\"unlocked\":3,\"mute\":false,\"missionProgress\":{\"red\":4,\"blue\":6}}"
+      },
+      "steps": [
+        {
+          "do": "visible",
+          "selector": "#board"
+        },
+        {
+          "do": "drag",
+          "selector": "[data-pos='0']",
+          "target": "[data-pos='1']"
+        },
+        {
+          "do": "text",
+          "selector": "#result-title",
+          "value": "전체 클리어!"
+        }
+      ]
+    },
+    {
+      "name": "레벨1 패배 및 재시작 20수 검증",
+      "seed": {
+        "dot-chain-v1": "{\"score\":100,\"best\":100,\"moves\":1,\"phase\":\"playing\",\"mission\":null,\"board\":[\"red\",\"red\",\"blue\",\"yellow\",\"green\",\"red\",\"blue\",\"yellow\",\"green\",\"red\",\"yellow\",\"green\",\"red\",\"blue\",\"yellow\",\"green\",\"red\",\"blue\",\"yellow\",\"green\",\"red\",\"blue\",\"yellow\",\"green\",\"red\",\"blue\",\"yellow\",\"green\",\"red\",\"blue\",\"yellow\",\"green\",\"red\",\"blue\",\"yellow\",\"green\"],\"level\":1,\"unlocked\":1,\"mute\":false,\"missionProgress\":null}"
+      },
+      "steps": [
+        {
+          "do": "visible",
+          "selector": "#board"
+        },
+        {
+          "do": "drag",
+          "selector": "[data-pos='0']",
+          "target": "[data-pos='1']"
+        },
+        {
+          "do": "text",
+          "selector": "#result-title",
+          "value": "패배"
+        },
+        {
+          "do": "click",
+          "selector": "#restart"
+        },
+        {
+          "do": "text",
+          "selector": "#moves",
+          "value": "20"
+        }
+      ]
+    },
+    {
+      "name": "음소거 버튼 클릭 및 상태 유지 검증",
+      "seed": {
+        "dot-chain-v1": "{\"score\":0,\"best\":0,\"moves\":20,\"phase\":\"playing\",\"mission\":null,\"board\":[\"red\",\"red\",\"blue\",\"yellow\",\"green\",\"red\",\"blue\",\"yellow\",\"green\",\"red\",\"yellow\",\"green\",\"red\",\"blue\",\"yellow\",\"green\",\"red\",\"blue\",\"yellow\",\"green\",\"red\",\"blue\",\"yellow\",\"green\",\"red\",\"blue\",\"yellow\",\"green\",\"red\",\"blue\",\"yellow\",\"green\",\"red\",\"blue\",\"yellow\",\"green\"],\"level\":1,\"unlocked\":1,\"mute\":false,\"missionProgress\":null}"
+      },
+      "steps": [
+        {
+          "do": "visible",
+          "selector": "#mute-btn"
+        },
+        {
+          "do": "click",
+          "selector": "#mute-btn"
+        },
+        {
+          "do": "text",
+          "selector": "#mute-btn",
+          "value": "음소거 켜짐"
+        },
+        {
+          "do": "reload"
+        },
+        {
+          "do": "text",
+          "selector": "#mute-btn",
+          "value": "음소거 켜짐"
+        }
+      ]
+    },
+    {
+      "name": "레벨2 짧은 연결로 목표 점수를 넘어도 계속 진행",
+      "seed": {
+        "dot-chain-v1": {
+          "score": 1980,
+          "best": 1980,
+          "moves": 5,
+          "phase": "playing",
+          "mission": {
+            "kind": "length",
+            "bonus": 200
+          },
+          "board": [
+            "red",
+            "red",
+            "red",
+            "red",
+            "red",
+            "blue",
+            "blue",
+            "yellow",
+            "green",
+            "red",
+            "yellow",
+            "green",
+            "green",
+            "yellow",
+            "blue",
+            "blue",
+            "red",
+            "blue",
+            "yellow",
+            "green",
+            "red",
+            "blue",
+            "yellow",
+            "green",
+            "red",
+            "blue",
+            "yellow",
+            "green",
+            "red",
+            "blue",
+            "yellow",
+            "green",
+            "red",
+            "blue",
+            "yellow",
+            "green"
+          ],
+          "level": 2,
+          "unlocked": 2,
+          "mute": false,
+          "missionProgress": {
+            "longChain": false
+          }
+        }
+      },
+      "steps": [
+        {
+          "do": "drag",
+          "selector": "[data-pos='0']",
+          "target": "[data-pos='1']"
+        },
+        {
+          "do": "playing-after-short-chain"
+        }
+      ]
+    }
+  ],
+  "dot_chain_regression": true
+}
